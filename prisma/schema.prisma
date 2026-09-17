@@ -54,6 +54,20 @@ model Product {
   @@index([active, category])
 }
 
+model ProductImage {
+  id        String   @id @default(cuid()) @db.VarChar(30)
+  mimeType  String   @db.VarChar(50)
+  byteSize  Int
+  data      Bytes    @db.LongBlob
+  createdAt DateTime @default(now()) @db.DateTime(3)
+}
+
+model StoreSetting {
+  key       String   @id @db.VarChar(100)
+  value     String   @db.VarChar(500)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+}
+
 model Order {
   id                 String         @id @default(cuid()) @db.VarChar(30)
   orderNumber        String         @unique @db.VarChar(40)
