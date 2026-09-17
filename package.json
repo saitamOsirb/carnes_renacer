@@ -2,7 +2,6 @@
   "name": "renacer-nextjs-webpay",
   "version": "1.0.0",
   "private": true,
-  "description": "Renacer Distribuidora storefront with Next.js, Prisma and Webpay Plus.",
   "scripts": {
     "predev": "prisma generate",
     "dev": "next dev --turbopack",
