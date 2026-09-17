@@ -78,6 +78,14 @@ async function uniqueSlug(candidate: string, excludeId?: string): Promise<string
   throw new Error("No fue posible generar un slug único.");
 }
 
+function revalidateCatalog(slug?: string): void {
+  revalidatePath("/");
+  revalidatePath("/productos");
+  revalidatePath("/carrito");
+  revalidatePath("/checkout");
+  if (slug) revalidatePath(`/productos/${slug}`);
+}
+
 export async function loginAdmin(formData: FormData): Promise<void> {
   const password = text(formData, "password", 500);
   if (!password || !(await createAdminSession(password))) {
@@ -113,23 +121,27 @@ export async function createProduct(formData: FormData): Promise<void> {
   if (!imageUrl) redirect(statusUrl("/admin/productos", "error", "Debes subir una imagen para el producto."));
 
   const slug = await uniqueSlug(text(formData, "slug", 191) || name);
-  await prisma.product.create({
-    data: {
-      slug,
-      name,
-      description,
-      category,
-      imageUrl,
-      price,
-      stock,
-      unit,
-      active: formData.get("active") === "on",
-      featured: formData.get("featured") === "on",
-    },
-  });
+  try {
+    await prisma.product.create({
+      data: {
+        slug,
+        name,
+        description,
+        category,
+        imageUrl,
+        price,
+        stock,
+        unit,
+        active: formData.get("active") === "on",
+        featured: formData.get("featured") === "on",
+      },
+    });
+  } catch (error) {
+    await cleanupImage(imageUrl);
+    throw error;
+  }
 
-  revalidatePath("/");
-  revalidatePath("/productos");
+  revalidateCatalog(slug);
   redirect(statusUrl("/admin/productos", "ok", "Producto creado correctamente."));
 }
 
@@ -159,60 +171,58 @@ export async function updateProduct(formData: FormData): Promise<void> {
   }
 
   const slug = await uniqueSlug(text(formData, "slug", 191) || name, id);
-  const updated = await prisma.product.update({
-    where: { id },
-    data: {
-      slug,
-      name,
-      description,
-      category,
-      price,
-      stock,
-      unit: text(formData, "unit", 10) === "UNIT" ? UnitType.UNIT : UnitType.KG,
-      active: formData.get("active") === "on",
-      featured: formData.get("featured") === "on",
-      ...(replacement ? { imageUrl: replacement } : {}),
-    },
-  });
+  let updated;
+  try {
+    updated = await prisma.product.update({
+      where: { id },
+      data: {
+        slug,
+        name,
+        description,
+        category,
+        price,
+        stock,
+        unit: text(formData, "unit", 10) === "UNIT" ? UnitType.UNIT : UnitType.KG,
+        active: formData.get("active") === "on",
+        featured: formData.get("featured") === "on",
+        ...(replacement ? { imageUrl: replacement } : {}),
+      },
+    });
+  } catch (error) {
+    if (replacement) await cleanupImage(replacement);
+    throw error;
+  }
 
   if (replacement && current.imageUrl !== updated.imageUrl) await cleanupImage(current.imageUrl);
-  revalidatePath("/");
-  revalidatePath("/productos");
-  revalidatePath(`/productos/${updated.slug}`);
+  revalidateCatalog(current.slug);
+  if (updated.slug !== current.slug) revalidateCatalog(updated.slug);
   redirect(statusUrl("/admin/productos", "ok", `Producto ${updated.name} actualizado.`));
 }
 
 export async function deleteProduct(formData: FormData): Promise<void> {
   await requireAdmin();
   const id = text(formData, "id", 30);
-  const product = await prisma.product.findUnique({
-    where: { id },
-    include: { _count: { select: { orderItems: true } } },
-  });
+  const product = await prisma.product.findUnique({ where: { id } });
   if (!product) redirect(statusUrl("/admin/productos", "error", "Producto no encontrado."));
 
-  if (product._count.orderItems > 0) {
-    await prisma.product.update({ where: { id }, data: { active: false, featured: false } });
-    revalidatePath("/");
-    revalidatePath("/productos");
-    redirect(statusUrl("/admin/productos", "ok", "El producto tiene historial de pedidos y fue desactivado en vez de eliminarse."));
-  }
-
-  await prisma.product.delete({ where: { id } });
-  await cleanupImage(product.imageUrl);
-  revalidatePath("/");
-  revalidatePath("/productos");
-  redirect(statusUrl("/admin/productos", "ok", "Producto eliminado."));
+  await prisma.product.update({
+    where: { id },
+    data: { active: false, featured: false },
+  });
+  revalidateCatalog(product.slug);
+  redirect(statusUrl("/admin/productos", "ok", `Producto ${product.name} desactivado. Su historial se conserva.`));
 }
 
 export async function updateCheckoutWhatsapp(formData: FormData): Promise<void> {
   await requireAdmin();
   const raw = text(formData, "whatsapp", 40);
+  let normalized: string;
   try {
-    const normalized = await setCheckoutWhatsappNumber(raw);
-    revalidatePath("/checkout");
-    redirect(statusUrl("/admin/configuracion", "ok", `WhatsApp actualizado a +${normalized}.`));
+    normalized = await setCheckoutWhatsappNumber(raw);
   } catch (error) {
     redirect(statusUrl("/admin/configuracion", "error", error instanceof Error ? error.message : "Número inválido."));
   }
+
+  revalidatePath("/checkout");
+  redirect(statusUrl("/admin/configuracion", "ok", `WhatsApp actualizado a +${normalized}.`));
 }
