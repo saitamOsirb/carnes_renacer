@@ -157,9 +157,11 @@ export function CheckoutForm() {
     }
 
     const whatsappUrl = `https://wa.me/${COMPANY_WHATSAPP}?text=${encodeURIComponent(buildWhatsAppMessage())}`;
-    const opened = window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+    const opened = window.open(whatsappUrl, "_blank");
 
-    if (!opened) {
+    if (opened) {
+      opened.opener = null;
+    } else {
       window.location.assign(whatsappUrl);
     }
   }
