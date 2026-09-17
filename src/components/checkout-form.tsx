@@ -2,15 +2,14 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useCart } from "@/components/cart-context";
-import { getCsrfToken } from "@/lib/client-security";
 import { formatClp } from "@/lib/format";
-import { calculateEstimatedShipping, FREE_SHIPPING_THRESHOLD } from "@/lib/pricing-config";
+import { calculateEstimatedShipping } from "@/lib/pricing-config";
 import { calculatePreviewDiscount } from "@/lib/coupon-preview";
 
 const DRAFT_KEY = "renacer_checkout_draft_v1";
-const PAYMENTS_ENABLED = process.env.NEXT_PUBLIC_PAYMENTS_ENABLED === "true";
+const COMPANY_WHATSAPP = (process.env.NEXT_PUBLIC_WHATSAPP_NUMBER ?? "56993409633").replace(/\D/g, "");
 
 type CheckoutDraft = {
   name: string;
@@ -64,19 +63,13 @@ function readDraft(): CheckoutDraft {
   }
 }
 
-function makeIdempotencyKey() {
-  return globalThis.crypto?.randomUUID?.() ?? `renacer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
 export function CheckoutForm() {
   const searchParams = useSearchParams();
   const { items, subtotal, hydrated } = useCart();
   const [draft, setDraft] = useState<CheckoutDraft>(emptyDraft);
   const [draftLoaded, setDraftLoaded] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const idempotencyKey = useRef("");
   const coupon = (searchParams.get("coupon") ?? "").toUpperCase();
   const estimatedShipping = calculateEstimatedShipping(subtotal);
   const previewDiscount = calculatePreviewDiscount(subtotal, coupon);
@@ -85,7 +78,6 @@ export function CheckoutForm() {
 
   useEffect(() => {
     setDraft(readDraft());
-    idempotencyKey.current = makeIdempotencyKey();
     setDraftLoaded(true);
   }, []);
 
@@ -106,7 +98,50 @@ export function CheckoutForm() {
     }
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  function buildWhatsAppMessage() {
+    const productLines = items.map((item) =>
+      `• ${item.product.name} x ${item.quantity} — ${formatClp(item.product.price * item.quantity)}`,
+    );
+
+    const summaryLines = [
+      `Subtotal: ${formatClp(subtotal)}`,
+      `Despacho estimado: ${estimatedShipping === 0 ? "Gratis" : formatClp(estimatedShipping)}`,
+    ];
+
+    if (coupon) summaryLines.push(`Cupón: ${coupon}`);
+    if (previewDiscount > 0) summaryLines.push(`Descuento estimado: -${formatClp(previewDiscount)}`);
+    summaryLines.push(`TOTAL ESTIMADO: ${formatClp(estimatedTotal)}`);
+
+    const address = [draft.addressLine, draft.addressDetail].filter(Boolean).join(", ");
+
+    const customerLines = [
+      `Nombre: ${draft.name}`,
+      `RUT: ${draft.rut || "No informado"}`,
+      `Teléfono: ${draft.phone}`,
+      `Email: ${draft.email}`,
+      `Dirección: ${address}`,
+      "Comuna: Antofagasta",
+      "Región: Región de Antofagasta",
+      `Fecha preferida de entrega: ${draft.deliveryDate || "Sin preferencia"}`,
+      `Indicaciones: ${draft.notes || "Sin indicaciones especiales"}`,
+    ];
+
+    return [
+      "Hola, quisiera solicitar un link de pago para el siguiente pedido de Renacer Distribuidora.",
+      "",
+      "*PEDIDO*",
+      ...productLines,
+      "",
+      ...summaryLines,
+      "",
+      "*DATOS DEL COMPRADOR*",
+      ...customerLines,
+      "",
+      "Por favor, confirmen stock y total final, y envíenme el link de pago por este mismo WhatsApp. Gracias.",
+    ].join("\n");
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!items.length) return;
 
@@ -114,57 +149,18 @@ export function CheckoutForm() {
     const submitter = nativeEvent.submitter instanceof HTMLButtonElement ? nativeEvent.submitter : null;
     const intent = submitter?.value ?? "save";
 
-    if (!saveDraft() || intent !== "payment" || !PAYMENTS_ENABLED) return;
+    if (!saveDraft() || intent !== "whatsapp") return;
 
-    setSubmitting(true);
-    setError("");
-    if (!idempotencyKey.current) idempotencyKey.current = makeIdempotencyKey();
+    if (!COMPANY_WHATSAPP) {
+      setError("El WhatsApp de la empresa no está configurado.");
+      return;
+    }
 
-    const payload = {
-      items: items.map((item) => ({ productId: item.product.id, quantity: item.quantity })),
-      couponCode: coupon,
-      customer: {
-        name: draft.name,
-        email: draft.email,
-        phone: draft.phone,
-        rut: draft.rut,
-        addressLine: draft.addressLine,
-        addressDetail: draft.addressDetail,
-        commune: "Antofagasta",
-        region: "Región de Antofagasta",
-        deliveryDate: draft.deliveryDate,
-        notes: draft.notes,
-        termsAccepted: draft.termsAccepted,
-      },
-    };
+    const whatsappUrl = `https://wa.me/${COMPANY_WHATSAPP}?text=${encodeURIComponent(buildWhatsAppMessage())}`;
+    const opened = window.open(whatsappUrl, "_blank", "noopener,noreferrer");
 
-    try {
-      const response = await fetch("/api/checkout", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": getCsrfToken(),
-          "Idempotency-Key": idempotencyKey.current,
-        },
-        body: JSON.stringify(payload),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.message ?? "No pudimos iniciar el pago.");
-
-      const paymentForm = document.createElement("form");
-      paymentForm.method = "POST";
-      paymentForm.action = result.url;
-      const input = document.createElement("input");
-      input.type = "hidden";
-      input.name = "token_ws";
-      input.value = result.token;
-      paymentForm.appendChild(input);
-      document.body.appendChild(paymentForm);
-      paymentForm.submit();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "No pudimos iniciar el pago.");
-      idempotencyKey.current = makeIdempotencyKey();
-      setSubmitting(false);
+    if (!opened) {
+      window.location.assign(whatsappUrl);
     }
   }
 
@@ -175,7 +171,7 @@ export function CheckoutForm() {
     <section className="container checkout-layout">
       <form className="checkout-form" onSubmit={handleSubmit}>
         <h2>Datos de entrega</h2>
-        <p className="section-help">Puedes completar y guardar tus datos. El pago se habilitará cuando termine la integración de Webpay Plus.</p>
+        <p className="section-help">Completa tus datos y solicita el link de pago por WhatsApp. Enviaremos el detalle de tu carrito a Renacer Distribuidora para confirmar stock, total final y generar el link de pago.</p>
         <div className="form-grid">
           <label>Nombre completo<input name="name" required minLength={3} maxLength={120} autoComplete="name" value={draft.name} onChange={(event) => updateField("name", event.target.value)} /></label>
           <label>Email<input name="email" type="email" required maxLength={160} autoComplete="email" value={draft.email} onChange={(event) => updateField("email", event.target.value)} /></label>
@@ -191,10 +187,10 @@ export function CheckoutForm() {
         {saved && <div className="success-box" role="status">Datos de entrega guardados correctamente en este dispositivo.</div>}
         {error && <div className="error-box" role="alert">{error}</div>}
         <button className="button button-light full" type="submit" name="intent" value="save">Guardar datos de entrega</button>
-        <button className={PAYMENTS_ENABLED ? "button button-primary full" : "button button-primary full payment-disabled"} type="submit" name="intent" value="payment" disabled={!PAYMENTS_ENABLED || submitting} aria-disabled={!PAYMENTS_ENABLED || submitting}>
-          {submitting ? "Conectando con Webpay…" : PAYMENTS_ENABLED ? "Pagar con Webpay Plus" : "Pago Webpay Plus en integración"}
+        <button className="button button-primary full" type="submit" name="intent" value="whatsapp">
+          Solicitar link de pago por WhatsApp
         </button>
-        {!PAYMENTS_ENABLED && <p className="payment-disabled-note">Este es el único paso desactivado. El carrito, las cantidades, el cupón y los datos de entrega permanecen operativos.</p>}
+        <p className="payment-disabled-note">Se abrirá WhatsApp con tu carrito y datos de entrega listos para enviar. Renacer Distribuidora confirmará el pedido y te enviará el link de pago por ese mismo chat.</p>
       </form>
       <aside className="order-summary checkout-summary">
         <h2>Tu pedido</h2>
@@ -205,7 +201,7 @@ export function CheckoutForm() {
         {coupon && <div><span>Cupón</span><strong>{coupon}</strong></div>}
         {previewDiscount > 0 && <div className="discount-row"><span>Descuento estimado</span><strong>−{formatClp(previewDiscount)}</strong></div>}
         <div className="summary-total"><span>Total estimado</span><strong>{formatClp(estimatedTotal)}</strong></div>
-        <p className="summary-note">Los precios, el stock, el despacho y los descuentos se recalcularán en el servidor antes de habilitar el pago.</p>
+        <p className="summary-note">El total mostrado es estimado. Renacer Distribuidora confirmará stock, despacho, descuentos y total final antes de enviarte el link de pago.</p>
       </aside>
     </section>
   );
