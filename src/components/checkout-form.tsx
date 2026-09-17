@@ -11,7 +11,6 @@ import { publicConfig } from "@/lib/public-config";
 
 const DRAFT_KEY = "renacer_checkout_draft_v1";
 const COMPANY_WHATSAPP = publicConfig.whatsapp.replace(/\D/g, "");
-const IVA_RATE = 0.19;
 
 type CheckoutDraft = {
   name: string;
@@ -76,8 +75,6 @@ export function CheckoutForm() {
   const estimatedShipping = calculateEstimatedShipping(subtotal);
   const previewDiscount = calculatePreviewDiscount(subtotal, coupon);
   const estimatedTotal = Math.max(0, subtotal + estimatedShipping - previewDiscount);
-  const estimatedNet = Math.round(estimatedTotal / (1 + IVA_RATE));
-  const estimatedIva = Math.max(0, estimatedTotal - estimatedNet);
   const minDate = useMemo(nextBusinessDate, []);
 
   useEffect(() => {
@@ -114,9 +111,7 @@ export function CheckoutForm() {
 
     if (coupon) summaryLines.push(`Cupón: ${coupon}`);
     if (previewDiscount > 0) summaryLines.push(`Descuento estimado: -${formatClp(previewDiscount)}`);
-    summaryLines.push(`Neto estimado: ${formatClp(estimatedNet)}`);
-    summaryLines.push(`IVA incluido (19%): ${formatClp(estimatedIva)}`);
-    summaryLines.push(`TOTAL ESTIMADO (IVA incluido): ${formatClp(estimatedTotal)}`);
+    summaryLines.push(`TOTAL ESTIMADO: ${formatClp(estimatedTotal)}`);
 
     const address = [draft.addressLine, draft.addressDetail].filter(Boolean).join(", ");
 
@@ -208,10 +203,8 @@ export function CheckoutForm() {
         <div><span>Despacho estimado</span><strong>{estimatedShipping === 0 ? "Gratis" : formatClp(estimatedShipping)}</strong></div>
         {coupon && <div><span>Cupón</span><strong>{coupon}</strong></div>}
         {previewDiscount > 0 && <div className="discount-row"><span>Descuento estimado</span><strong>−{formatClp(previewDiscount)}</strong></div>}
-        <div><span>Neto estimado</span><strong>{formatClp(estimatedNet)}</strong></div>
-        <div><span>IVA incluido (19%)</span><strong>{formatClp(estimatedIva)}</strong></div>
-        <div className="summary-total"><span>Total estimado (IVA incluido)</span><strong>{formatClp(estimatedTotal)}</strong></div>
-        <p className="summary-note">Los precios mostrados incluyen IVA. El total es estimado y Renacer Distribuidora confirmará stock, despacho, descuentos y total final antes de enviarte el link de pago.</p>
+        <div className="summary-total"><span>Total estimado</span><strong>{formatClp(estimatedTotal)}</strong></div>
+        <p className="summary-note">El total mostrado es estimado. Renacer Distribuidora confirmará stock, despacho, descuentos y total final antes de enviarte el link de pago.</p>
       </aside>
     </section>
   );
