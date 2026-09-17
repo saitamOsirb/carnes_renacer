@@ -1,5 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
+import { publicConfig } from "@/lib/public-config";
 
 export function Hero() {
   return (
@@ -11,7 +12,7 @@ export function Hero() {
           <p>Calidad superior, frescura garantizada y abastecimiento confiable para restaurantes, casinos, minimarkets y hogares de Antofagasta.</p>
           <div className="hero-actions">
             <Link href="/productos" className="button button-primary">Ver productos →</Link>
-            <a className="button button-dark-outline" href={`https://wa.me/${process.env.NEXT_PUBLIC_WHATSAPP_NUMBER ?? "56993409633"}`} target="_blank" rel="noreferrer">Pedir por WhatsApp</a>
+            <a className="button button-dark-outline" href={`https://wa.me/${publicConfig.whatsapp}`} target="_blank" rel="noreferrer">Pedir por WhatsApp</a>
           </div>
         </div>
         <div className="hero-visual"><Image src="/images/hero/home.jpg" alt="Cortes de carne premium" fill priority sizes="(max-width: 900px) 100vw, 50vw" /></div>
