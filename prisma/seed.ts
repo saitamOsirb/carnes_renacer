@@ -21,6 +21,12 @@ async function main() {
     });
   }
 
+  await prisma.storeSetting.upsert({
+    where: { key: "checkout_whatsapp" },
+    update: {},
+    create: { key: "checkout_whatsapp", value: "56991851942" },
+  });
+
   await prisma.coupon.upsert({
     where: { code: "BIENVENIDA5" },
     update: {},
