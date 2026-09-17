@@ -1,0 +1,147 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum UnitType {
+  KG
+  UNIT
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  PAYMENT_FAILED
+  PAYMENT_REVIEW
+  CANCELLED
+  FULFILLING
+  SHIPPED
+  COMPLETED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  REJECTED
+  CANCELLED
+  FAILED
+  REVIEW
+  REFUNDED
+}
+
+model Product {
+  id          String      @id @default(cuid()) @db.VarChar(30)
+  slug        String      @unique @db.VarChar(191)
+  name        String      @db.VarChar(191)
+  description String      @db.Text
+  category    String      @db.VarChar(100)
+  imageUrl    String      @db.VarChar(500)
+  price       Int
+  unit        UnitType    @default(KG)
+  stock       Int
+  reserved    Int         @default(0)
+  active      Boolean     @default(true)
+  featured    Boolean     @default(false)
+  createdAt   DateTime    @default(now()) @db.DateTime(3)
+  updatedAt   DateTime    @updatedAt @db.DateTime(3)
+  orderItems  OrderItem[]
+
+  @@index([active, category])
+}
+
+model Order {
+  id                 String         @id @default(cuid()) @db.VarChar(30)
+  orderNumber        String         @unique @db.VarChar(40)
+  buyOrder           String         @unique @db.VarChar(26)
+  idempotencyKey     String         @unique @db.VarChar(191)
+  sessionId          String         @db.VarChar(61)
+  status             OrderStatus    @default(PENDING_PAYMENT)
+  paymentStatus      PaymentStatus  @default(PENDING)
+  customerName       String         @db.VarChar(191)
+  customerEmail      String         @db.VarChar(191)
+  customerPhone      String         @db.VarChar(40)
+  customerRut        String?        @db.VarChar(20)
+  addressLine        String         @db.VarChar(255)
+  addressDetail      String?        @db.VarChar(255)
+  commune            String         @db.VarChar(120)
+  region             String         @db.VarChar(120)
+  deliveryDate       DateTime?      @db.DateTime(3)
+  notes              String?        @db.Text
+  subtotal           Int
+  shipping           Int
+  discount           Int            @default(0)
+  couponCode         String?        @db.VarChar(100)
+  total              Int
+  tokenWs            String?        @unique @db.VarChar(191)
+  webpayUrl          String?        @db.VarChar(500)
+  authorizationCode  String?        @db.VarChar(100)
+  paymentTypeCode    String?        @db.VarChar(20)
+  installmentsNumber Int?
+  cardLastFour       String?        @db.VarChar(4)
+  webpayResponse     Json?
+  reservationExpires DateTime       @db.DateTime(3)
+  createdAt          DateTime       @default(now()) @db.DateTime(3)
+  updatedAt          DateTime       @updatedAt @db.DateTime(3)
+  items              OrderItem[]
+
+  @@index([status, createdAt])
+  @@index([customerEmail, createdAt])
+}
+
+model OrderItem {
+  id          String   @id @default(cuid()) @db.VarChar(30)
+  orderId     String   @db.VarChar(30)
+  productId   String   @db.VarChar(30)
+  productName String   @db.VarChar(191)
+  imageUrl    String   @db.VarChar(500)
+  unit        UnitType
+  quantity    Int
+  unitPrice   Int
+  subtotal    Int
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+}
+
+model Coupon {
+  id               String   @id @default(cuid()) @db.VarChar(30)
+  code             String   @unique @db.VarChar(100)
+  active           Boolean  @default(true)
+  percentOff       Int?
+  fixedAmountOff   Int?
+  minimumSubtotal  Int      @default(0)
+  startsAt         DateTime? @db.DateTime(3)
+  endsAt           DateTime? @db.DateTime(3)
+  usageLimit       Int?
+  usedCount        Int      @default(0)
+  createdAt        DateTime @default(now()) @db.DateTime(3)
+  updatedAt        DateTime @updatedAt @db.DateTime(3)
+}
+
+model ContactMessage {
+  id        String    @id @default(cuid()) @db.VarChar(30)
+  name      String    @db.VarChar(191)
+  company   String?   @db.VarChar(191)
+  email     String    @db.VarChar(191)
+  phone     String?   @db.VarChar(40)
+  subject   String    @db.VarChar(191)
+  message   String    @db.Text
+  ipHash    String?   @db.VarChar(191)
+  createdAt DateTime  @default(now()) @db.DateTime(3)
+  handledAt DateTime? @db.DateTime(3)
+
+  @@index([createdAt])
+}
+
+model RateLimitBucket {
+  key         String   @id @db.VarChar(191)
+  count       Int      @default(0)
+  windowStart DateTime @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @db.DateTime(3)
+}

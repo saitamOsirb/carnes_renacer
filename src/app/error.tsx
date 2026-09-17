@@ -1,0 +1,2 @@
+"use client";
+export default function GlobalError({ reset }: { error: Error & { digest?: string }; reset: () => void }) { return <section className="result-page container"><div className="result-card failure"><div className="result-icon">!</div><h1>Ocurrió un problema</h1><p>No pudimos cargar esta sección. Puedes intentarlo nuevamente.</p><button className="button button-primary" onClick={reset}>Reintentar</button></div></section>; }

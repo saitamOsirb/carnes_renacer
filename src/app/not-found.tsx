@@ -1,0 +1,2 @@
+import Link from "next/link";
+export default function NotFound() { return <section className="result-page container"><div className="result-card failure"><div className="result-icon">?</div><h1>Página no encontrada</h1><p>La dirección solicitada no existe o cambió.</p><div className="result-actions"><Link href="/" className="button button-primary">Ir al inicio</Link><Link href="/productos" className="button button-light">Ver productos</Link></div></div></section>; }
