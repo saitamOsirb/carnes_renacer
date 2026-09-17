@@ -3,9 +3,8 @@
 import { useMemo, useState } from "react";
 import { ProductCard } from "@/components/product-card";
 import type { StoreProduct } from "@/components/cart-context";
-import { categories } from "@/data/catalog";
 
-export function ProductCatalog({ products, initialCategory }: { products: StoreProduct[]; initialCategory?: string }) {
+export function ProductCatalog({ products, categories, initialCategory }: { products: StoreProduct[]; categories: string[]; initialCategory?: string }) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string[]>(initialCategory ? [initialCategory] : []);
   const [sort, setSort] = useState("featured");
