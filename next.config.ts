@@ -13,6 +13,9 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     optimizePackageImports: [],
+    serverActions: {
+      bodySizeLimit: "6mb",
+    },
   },
 };
 
