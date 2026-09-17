@@ -1,17 +1,9 @@
-import { prisma } from "@/lib/prisma";
+import { getCheckoutWhatsappNumber } from "@/lib/store-settings";
 
 export const dynamic = "force-dynamic";
 
-const DEFAULT_WHATSAPP = "56991851942";
-const WHATSAPP_KEY = "payment_whatsapp";
-
 export async function GET() {
-  const setting = await prisma.storeSetting.findUnique({
-    where: { key: WHATSAPP_KEY },
-    select: { value: true },
-  });
-
-  const whatsapp = (setting?.value ?? DEFAULT_WHATSAPP).replace(/\D/g, "");
+  const whatsapp = await getCheckoutWhatsappNumber();
 
   return Response.json(
     { whatsapp },
