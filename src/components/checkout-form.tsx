@@ -100,45 +100,58 @@ export function CheckoutForm() {
   }
 
   function buildWhatsAppMessage() {
-    const productLines = items.map((item) =>
-      `• ${item.product.name} x ${item.quantity} — ${formatClp(item.product.price * item.quantity)}`,
-    );
+    const productLines = items.flatMap((item, index) => [
+      `*${index + 1}. ${item.product.name}*`,
+      `Cantidad: ${item.quantity}`,
+      `Total producto: ${formatClp(item.product.price * item.quantity)}`,
+      "",
+    ]);
 
     const summaryLines = [
       `Subtotal: ${formatClp(subtotal)}`,
-      `Despacho estimado: ${estimatedShipping === 0 ? "Gratis" : formatClp(estimatedShipping)}`,
+      `Despacho: ${estimatedShipping === 0 ? "Gratis" : formatClp(estimatedShipping)}`,
     ];
 
     if (coupon) summaryLines.push(`Cupón: ${coupon}`);
-    if (previewDiscount > 0) summaryLines.push(`Descuento estimado: -${formatClp(previewDiscount)}`);
-    summaryLines.push(`TOTAL ESTIMADO: ${formatClp(estimatedTotal)}`);
+    if (previewDiscount > 0) summaryLines.push(`Descuento: -${formatClp(previewDiscount)}`);
+    summaryLines.push(`*TOTAL ESTIMADO: ${formatClp(estimatedTotal)}*`);
 
     const address = [draft.addressLine, draft.addressDetail].filter(Boolean).join(", ");
 
-    const customerLines = [
+    return [
+      "*NUEVA SOLICITUD DE PEDIDO*",
+      "Renacer Distribuidora",
+      "",
+      "Hola, quisiera solicitar un link de pago para este pedido:",
+      "",
+      "--------------------",
+      "*DETALLE DEL PEDIDO*",
+      "--------------------",
+      ...productLines,
+      "--------------------",
+      "*RESUMEN*",
+      "--------------------",
+      ...summaryLines,
+      "",
+      "--------------------",
+      "*DATOS DEL COMPRADOR*",
+      "--------------------",
       `Nombre: ${draft.name}`,
       `RUT: ${draft.rut || "No informado"}`,
       `Teléfono: ${draft.phone}`,
       `Email: ${draft.email}`,
+      "",
+      "--------------------",
+      "*DATOS DE ENTREGA*",
+      "--------------------",
       `Dirección: ${address}`,
       "Comuna: Antofagasta",
       "Región: Región de Antofagasta",
-      `Fecha preferida de entrega: ${draft.deliveryDate || "Sin preferencia"}`,
+      `Fecha preferida: ${draft.deliveryDate || "Sin preferencia"}`,
       `Indicaciones: ${draft.notes || "Sin indicaciones especiales"}`,
-    ];
-
-    return [
-      "Hola, quisiera solicitar un link de pago para el siguiente pedido de Renacer Distribuidora.",
       "",
-      "*PEDIDO*",
-      ...productLines,
-      "",
-      ...summaryLines,
-      "",
-      "*DATOS DEL COMPRADOR*",
-      ...customerLines,
-      "",
-      "Por favor, confirmen stock y total final, y envíenme el link de pago por este mismo WhatsApp. Gracias.",
+      "Por favor, confirmen stock y total final y envíenme el link de pago por este mismo WhatsApp.",
+      "Gracias.",
     ].join("\n");
   }
 
