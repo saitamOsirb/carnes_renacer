@@ -7,9 +7,10 @@ import { useCart } from "@/components/cart-context";
 import { formatClp } from "@/lib/format";
 import { calculateEstimatedShipping } from "@/lib/pricing-config";
 import { calculatePreviewDiscount } from "@/lib/coupon-preview";
+import { publicConfig } from "@/lib/public-config";
 
 const DRAFT_KEY = "renacer_checkout_draft_v1";
-const COMPANY_WHATSAPP = (process.env.NEXT_PUBLIC_WHATSAPP_NUMBER ?? "56993409633").replace(/\D/g, "");
+const COMPANY_WHATSAPP = publicConfig.whatsapp.replace(/\D/g, "");
 
 type CheckoutDraft = {
   name: string;
