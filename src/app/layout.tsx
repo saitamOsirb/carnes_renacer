@@ -7,7 +7,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.APP_URL ?? "http://localhost:3000"),
   title: { default: "Renacer Distribuidora | Carnes premium en Antofagasta", template: "%s | Renacer Distribuidora" },
-  description: "Tienda online de carnes premium con despacho en Antofagasta y pago seguro mediante Webpay Plus.",
+  description: "Tienda online de carnes premium con despacho en Antofagasta y compra coordinada por WhatsApp.",
   robots: { index: true, follow: true },
   openGraph: {
     title: "Renacer Distribuidora",
