@@ -99,7 +99,7 @@ export function CartPageClient() {
             </div>
             {couponMessage && <p className={appliedCoupon ? "coupon-message success" : "coupon-message error"} role="status">{couponMessage}</p>}
           </div>
-          <p>El descuento se muestra como referencia y volverá a validarse en el servidor cuando se habilite el pago.</p>
+          <p>El descuento se muestra como referencia. Renacer Distribuidora confirmará descuento y total final antes de enviarte el link de pago.</p>
         </div>
       </div>
       <aside className="order-summary">
@@ -111,7 +111,7 @@ export function CartPageClient() {
         <div className="summary-total"><span>Total estimado</span><strong>{formatClp(total)}</strong></div>
         <Link href={`/checkout${appliedCoupon ? `?coupon=${encodeURIComponent(appliedCoupon)}` : ""}`} className="button button-primary full">Continuar con datos de entrega →</Link>
         <Link href="/productos" className="button button-light full">Seguir comprando</Link>
-        <ul className="trust-list"><li>❄ Cadena de frío controlada</li><li>✓ Cantidades guardadas en este dispositivo</li><li>🔒 El pago permanece desactivado hasta completar Webpay</li></ul>
+        <ul className="trust-list"><li>❄ Cadena de frío controlada</li><li>✓ Cantidades guardadas en este dispositivo</li><li>✓ Confirmación y link de pago enviados por WhatsApp</li></ul>
       </aside>
     </section>
   );
