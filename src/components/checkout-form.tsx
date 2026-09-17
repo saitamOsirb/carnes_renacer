@@ -10,7 +10,7 @@ import { calculatePreviewDiscount } from "@/lib/coupon-preview";
 import { publicConfig } from "@/lib/public-config";
 
 const DRAFT_KEY = "renacer_checkout_draft_v1";
-const COMPANY_WHATSAPP = publicConfig.whatsapp.replace(/\D/g, "");
+const DEFAULT_COMPANY_WHATSAPP = publicConfig.whatsapp.replace(/\D/g, "");
 
 type CheckoutDraft = {
   name: string;
@@ -71,6 +71,7 @@ export function CheckoutForm() {
   const [draftLoaded, setDraftLoaded] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [companyWhatsapp, setCompanyWhatsapp] = useState(DEFAULT_COMPANY_WHATSAPP);
   const coupon = (searchParams.get("coupon") ?? "").toUpperCase();
   const estimatedShipping = calculateEstimatedShipping(subtotal);
   const previewDiscount = calculatePreviewDiscount(subtotal, coupon);
@@ -80,6 +81,14 @@ export function CheckoutForm() {
   useEffect(() => {
     setDraft(readDraft());
     setDraftLoaded(true);
+
+    void fetch("/api/store-settings", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((result: { whatsapp?: string } | null) => {
+        const normalized = result?.whatsapp?.replace(/\D/g, "") ?? "";
+        if (normalized) setCompanyWhatsapp(normalized);
+      })
+      .catch(() => undefined);
   }, []);
 
   function updateField<K extends keyof CheckoutDraft>(field: K, value: CheckoutDraft[K]) {
@@ -165,12 +174,12 @@ export function CheckoutForm() {
 
     if (!saveDraft() || intent !== "whatsapp") return;
 
-    if (!COMPANY_WHATSAPP) {
+    if (!companyWhatsapp) {
       setError("El WhatsApp de la empresa no está configurado.");
       return;
     }
 
-    const whatsappUrl = `https://wa.me/${COMPANY_WHATSAPP}?text=${encodeURIComponent(buildWhatsAppMessage())}`;
+    const whatsappUrl = `https://wa.me/${companyWhatsapp}?text=${encodeURIComponent(buildWhatsAppMessage())}`;
     const opened = window.open(whatsappUrl, "_blank");
 
     if (opened) {
@@ -203,9 +212,7 @@ export function CheckoutForm() {
         {saved && <div className="success-box" role="status">Datos de entrega guardados correctamente en este dispositivo.</div>}
         {error && <div className="error-box" role="alert">{error}</div>}
         <button className="button button-light full" type="submit" name="intent" value="save">Guardar datos de entrega</button>
-        <button className="button button-primary full" type="submit" name="intent" value="whatsapp">
-          Solicitar link de pago por WhatsApp
-        </button>
+        <button className="button button-primary full" type="submit" name="intent" value="whatsapp">Solicitar link de pago por WhatsApp</button>
         <p className="payment-disabled-note">Se abrirá WhatsApp con tu carrito y datos de entrega listos para enviar. Renacer Distribuidora confirmará el pedido y te enviará el link de pago por ese mismo chat.</p>
       </form>
       <aside className="order-summary checkout-summary">
