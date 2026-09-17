@@ -7,11 +7,7 @@ async function main() {
   for (const product of catalogProducts) {
     await prisma.product.upsert({
       where: { slug: product.slug },
-      update: {
-        ...product,
-        unit: UnitType[product.unit],
-        active: true,
-      },
+      update: {},
       create: {
         id: product.slug,
         ...product,
@@ -39,7 +35,7 @@ async function main() {
     },
   });
 
-  console.log(`Seed completado: ${catalogProducts.length} productos.`);
+  console.log(`Seed verificado: ${catalogProducts.length} productos base sin sobrescribir cambios administrativos.`);
 }
 
 main()
