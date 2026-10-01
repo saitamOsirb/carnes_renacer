@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useMemo, useRef, useState, type PointerEvent } from "react";
 import { saveWarehouseScene } from "@/app/admin/warehouse-map-actions";
+import { WarehouseWebGLViewer } from "@/components/admin/warehouse-webgl-viewer";
 
 type ObjectType =
   | "RACK"
@@ -107,13 +108,23 @@ export function Warehouse3DEditor({ warehouseId, widthCm, depthCm, heightCm, ini
   const newCounter = useRef(0);
 
   const selected = objects.find((object) => object.id === selectedId) ?? null;
-  const persistedScene = useMemo(() => JSON.stringify(objects.map(({ products: _products, ...object }) => object)), [objects]);
+  const persistedScene = useMemo(() => JSON.stringify(objects.map((object) => ({
+    id: object.id,
+    type: object.type,
+    label: object.label,
+    xCm: object.xCm,
+    zCm: object.zCm,
+    widthCm: object.widthCm,
+    depthCm: object.depthCm,
+    heightCm: object.heightCm,
+    rotation: object.rotation,
+  }))), [objects]);
 
-  function updateObject(id: string, patch: Partial<WarehouseSceneObject>) {
+  function updateObject(id: string, patch: Partial<WarehouseSceneObject>): void {
     setObjects((current) => current.map((object) => object.id === id ? { ...object, ...patch } : object));
   }
 
-  function addObject(type: ObjectType) {
+  function addObject(type: ObjectType): void {
     const defaults = objectDefaults[type];
     const sequence = objects.filter((object) => object.type === type).length + 1;
     const id = `new-${Date.now()}-${newCounter.current++}`;
@@ -133,13 +144,13 @@ export function Warehouse3DEditor({ warehouseId, widthCm, depthCm, heightCm, ini
     setSelectedId(id);
   }
 
-  function removeSelected() {
+  function removeSelected(): void {
     if (!selected) return;
     setObjects((current) => current.filter((object) => object.id !== selected.id));
     setSelectedId("");
   }
 
-  function startDrag(event: PointerEvent<HTMLButtonElement>, object: WarehouseSceneObject) {
+  function startDrag(event: PointerEvent<HTMLButtonElement>, object: WarehouseSceneObject): void {
     if (!boardRef.current) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     setSelectedId(object.id);
@@ -153,7 +164,7 @@ export function Warehouse3DEditor({ warehouseId, widthCm, depthCm, heightCm, ini
     });
   }
 
-  function moveDrag(event: PointerEvent<HTMLButtonElement>, object: WarehouseSceneObject) {
+  function moveDrag(event: PointerEvent<HTMLButtonElement>, object: WarehouseSceneObject): void {
     if (!drag || drag.id !== object.id || drag.pointerId !== event.pointerId || !boardRef.current) return;
     const rect = boardRef.current.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
@@ -165,11 +176,11 @@ export function Warehouse3DEditor({ warehouseId, widthCm, depthCm, heightCm, ini
     });
   }
 
-  function endDrag(event: PointerEvent<HTMLButtonElement>) {
+  function endDrag(event: PointerEvent<HTMLButtonElement>): void {
     if (drag?.pointerId === event.pointerId) setDrag(null);
   }
 
-  function numericPatch(key: "xCm" | "zCm" | "widthCm" | "depthCm" | "heightCm", raw: string) {
+  function numericPatch(key: "xCm" | "zCm" | "widthCm" | "depthCm" | "heightCm", raw: string): void {
     if (!selected) return;
     const value = Number(raw.replace(",", "."));
     if (!Number.isFinite(value)) return;
@@ -199,7 +210,7 @@ export function Warehouse3DEditor({ warehouseId, widthCm, depthCm, heightCm, ini
         </div>
         <div className="warehouse-view-toggle" role="group" aria-label="Vista del editor">
           <button type="button" className={view === "PLAN" ? "is-active" : ""} onClick={() => setView("PLAN")}>Planta</button>
-          <button type="button" className={view === "3D" ? "is-active" : ""} onClick={() => setView("3D")}>Vista 3D</button>
+          <button type="button" className={view === "3D" ? "is-active" : ""} onClick={() => setView("3D")}>3D WebGL</button>
         </div>
         <form action={saveWarehouseScene}>
           <input type="hidden" name="warehouseId" value={warehouseId} />
@@ -250,45 +261,26 @@ export function Warehouse3DEditor({ warehouseId, widthCm, depthCm, heightCm, ini
                   >
                     <strong>{object.label}</strong>
                     <small>{meters(object.widthCm)}×{meters(object.depthCm)} m</small>
-                    {object.products.length > 0 && <span className="warehouse-object-products">{object.products.slice(0, 3).map((product) => <Image key={product.id} src={product.imageUrl} alt="" width={28} height={28} />)}{object.products.length > 3 && <em>+{object.products.length - 3}</em>}</span>}
+                    {object.products.length > 0 && (
+                      <span className="warehouse-object-products">
+                        {object.products.slice(0, 3).map((product) => <Image key={product.id} src={product.imageUrl} alt="" width={28} height={28} />)}
+                        {object.products.length > 3 && <em>+{object.products.length - 3}</em>}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
               <div className="warehouse-ruler warehouse-ruler-z"><span>Profundidad {meters(depthCm)} m</span></div>
             </div>
           ) : (
-            <div className="warehouse-3d-stage" aria-label="Vista tridimensional de la bodega">
-              <div className="warehouse-3d-back-wall" />
-              <div className="warehouse-3d-floor" />
-              {objects.map((object) => {
-                const x = (object.xCm + object.widthCm / 2) / widthCm;
-                const z = (object.zCm + object.depthCm / 2) / depthCm;
-                const left = 50 + (x - z) * 40;
-                const top = 18 + (x + z) * 34;
-                const boxWidth = Math.max(30, (object.widthCm / widthCm) * 520);
-                const boxDepth = Math.max(8, (object.depthCm / depthCm) * 210);
-                const boxHeight = Math.max(10, (object.heightCm / heightCm) * 190);
-                const firstProduct = object.products[0];
-                return (
-                  <button
-                    type="button"
-                    key={object.id}
-                    className={`warehouse-3d-object type-${object.type.toLowerCase().replaceAll("_", "-")}${selectedId === object.id ? " is-selected" : ""}`}
-                    style={{ left: `${left}%`, top: `${top}%`, width: `${boxWidth}px`, height: `${boxHeight}px`, zIndex: Math.round(top * 10) }}
-                    onClick={() => setSelectedId(object.id)}
-                  >
-                    <span className="warehouse-3d-top" style={{ height: `${boxDepth}px` }} />
-                    <span className="warehouse-3d-side" style={{ width: `${Math.max(6, boxDepth * 0.65)}px` }} />
-                    <span className="warehouse-3d-front">
-                      {firstProduct && <Image src={firstProduct.imageUrl} alt={firstProduct.name} width={34} height={34} />}
-                      <strong>{object.label}</strong>
-                      {object.products.length > 0 && <small>{object.products.length} producto(s)</small>}
-                    </span>
-                  </button>
-                );
-              })}
-              {objects.length === 0 && <div className="warehouse-3d-empty">La bodega está vacía. Agrega objetos desde la vista Planta.</div>}
-            </div>
+            <WarehouseWebGLViewer
+              widthCm={widthCm}
+              depthCm={depthCm}
+              heightCm={heightCm}
+              objects={objects}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+            />
           )}
         </div>
 
@@ -315,7 +307,10 @@ export function Warehouse3DEditor({ warehouseId, widthCm, depthCm, heightCm, ini
                 {selected.products.map((product) => (
                   <div key={product.id}>
                     <Image src={product.imageUrl} alt={product.name} width={42} height={42} />
-                    <span><strong>{product.name}</strong><small>{product.available} {unitLabel(product.unit)} disponibles{product.locationCode ? ` · ${product.locationCode}` : ""}</small></span>
+                    <span>
+                      <strong>{product.name}</strong>
+                      <small>{product.available} {unitLabel(product.unit)} disponibles{product.locationCode ? ` · ${product.locationCode}` : ""}</small>
+                    </span>
                   </div>
                 ))}
               </div>
