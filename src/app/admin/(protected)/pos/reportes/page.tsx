@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { PosCashMovementType, PosPaymentMethod, PosShiftStatus, Prisma } from "@prisma/client";
+import { PrintButton } from "@/components/admin/print-button";
 import { formatClp } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 
@@ -92,10 +93,10 @@ export default async function PosReportsPage({ searchParams }: { searchParams: P
     <div className="admin-content pos-admin-page">
       <div className="admin-title-row">
         <div><span className="admin-kicker">POS</span><h1>Reportes de cajas y ventas</h1><p>Consolidado por período, caja, cajero, turno y medio de pago.</p></div>
-        <div className="pos-page-actions"><Link className="admin-button admin-button-secondary" href="/admin/pos">POS</Link><Link className="admin-button admin-button-secondary" href="/admin/pos/configuracion">Configuración</Link></div>
+        <div className="pos-page-actions no-print"><Link className="admin-button admin-button-secondary" href="/admin/pos">POS</Link><Link className="admin-button admin-button-secondary" href="/admin/pos/configuracion">Configuración</Link><PrintButton /></div>
       </div>
 
-      <form className="admin-card pos-report-filters" method="get">
+      <form className="admin-card pos-report-filters no-print" method="get">
         <label>Desde<input type="date" name="from" defaultValue={from} /></label>
         <label>Hasta<input type="date" name="to" defaultValue={to} /></label>
         <label>Caja<select name="registerId" defaultValue={query.registerId ?? ""}><option value="">Todas</option>{registers.map((register) => <option key={register.id} value={register.id}>{register.code} · {register.name}</option>)}</select></label>
@@ -113,31 +114,22 @@ export default async function PosReportsPage({ searchParams }: { searchParams: P
       </section>
 
       <section className="admin-operation-grid pos-report-columns">
-        <div className="admin-card">
-          <div className="admin-card-heading"><div><h2>Por medio de pago</h2><p>Importe y cantidad de transacciones.</p></div></div>
-          <div className="pos-report-list">{Object.values(PosPaymentMethod).map((method) => { const value = paymentTotals.get(method) ?? { count: 0, total: 0 }; return <div key={method}><span>{paymentLabels[method]}<small>{value.count} ventas</small></span><strong>{formatClp(value.total)}</strong></div>; })}</div>
-        </div>
-        <div className="admin-card">
-          <div className="admin-card-heading"><div><h2>Por caja</h2><p>Ventas asociadas a cada caja.</p></div></div>
-          <div className="pos-report-list">{[...registerTotals.entries()].sort((a, b) => b[1].total - a[1].total).map(([name, value]) => <div key={name}><span>{name}<small>{value.count} ventas</small></span><strong>{formatClp(value.total)}</strong></div>)}</div>
-        </div>
-        <div className="admin-card">
-          <div className="admin-card-heading"><div><h2>Por cajero</h2><p>Ventas registradas por usuario.</p></div></div>
-          <div className="pos-report-list">{[...userTotals.entries()].sort((a, b) => b[1].total - a[1].total).map(([name, value]) => <div key={name}><span>{name}<small>{value.count} ventas</small></span><strong>{formatClp(value.total)}</strong></div>)}</div>
-        </div>
+        <div className="admin-card"><div className="admin-card-heading"><div><h2>Por medio de pago</h2><p>Importe y cantidad de transacciones.</p></div></div><div className="pos-report-list">{Object.values(PosPaymentMethod).map((method) => { const value = paymentTotals.get(method) ?? { count: 0, total: 0 }; return <div key={method}><span>{paymentLabels[method]}<small>{value.count} ventas</small></span><strong>{formatClp(value.total)}</strong></div>; })}</div></div>
+        <div className="admin-card"><div className="admin-card-heading"><div><h2>Por caja</h2><p>Ventas asociadas a cada caja.</p></div></div><div className="pos-report-list">{[...registerTotals.entries()].sort((a, b) => b[1].total - a[1].total).map(([name, value]) => <div key={name}><span>{name}<small>{value.count} ventas</small></span><strong>{formatClp(value.total)}</strong></div>)}</div></div>
+        <div className="admin-card"><div className="admin-card-heading"><div><h2>Por cajero</h2><p>Ventas registradas por usuario.</p></div></div><div className="pos-report-list">{[...userTotals.entries()].sort((a, b) => b[1].total - a[1].total).map(([name, value]) => <div key={name}><span>{name}<small>{value.count} ventas</small></span><strong>{formatClp(value.total)}</strong></div>)}</div></div>
       </section>
 
       <section className="admin-card pos-management-section">
         <div className="admin-card-heading"><div><h2>Turnos de caja</h2><p>Apertura, venta, movimientos de efectivo y diferencias de cierre.</p></div></div>
-        <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Apertura / cierre</th><th>Caja</th><th>Cajero</th><th>Ventas</th><th>Apertura</th><th>Efectivo vendido</th><th>Ingresos</th><th>Retiros</th><th>Esperado</th><th>Declarado</th><th>Diferencia</th></tr></thead><tbody>
-          {shifts.length === 0 && <tr><td colSpan={11}>No hay turnos para los filtros seleccionados.</td></tr>}
+        <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Apertura / cierre</th><th>Caja</th><th>Cajero</th><th>Ventas</th><th>Apertura</th><th>Efectivo vendido</th><th>Ingresos</th><th>Retiros</th><th>Esperado</th><th>Declarado</th><th>Diferencia</th><th className="no-print"></th></tr></thead><tbody>
+          {shifts.length === 0 && <tr><td colSpan={12}>No hay turnos para los filtros seleccionados.</td></tr>}
           {shifts.map((shift) => {
             const cashSales = shift.sales.filter((sale) => sale.paymentMethod === PosPaymentMethod.CASH).reduce((sum, sale) => sum + sale.total, 0);
             const cashIn = shift.cashMovements.filter((movement) => movement.type === PosCashMovementType.CASH_IN).reduce((sum, movement) => sum + movement.amount, 0);
             const cashOut = shift.cashMovements.filter((movement) => movement.type === PosCashMovementType.CASH_OUT).reduce((sum, movement) => sum + movement.amount, 0);
             const expected = shift.expectedCash ?? shift.openingAmount + cashSales + cashIn - cashOut;
             const totalSales = shift.sales.reduce((sum, sale) => sum + sale.total, 0);
-            return <tr key={shift.id}><td>{shift.openedAt.toLocaleString("es-CL")}<small>{shift.closedAt ? `Cierre: ${shift.closedAt.toLocaleString("es-CL")}` : "Turno abierto"}</small></td><td>{shift.register.code}<small>{shift.register.name}</small></td><td>{shift.user.name}</td><td>{formatClp(totalSales)}<small>{shift.sales.length} ventas</small></td><td>{formatClp(shift.openingAmount)}</td><td>{formatClp(cashSales)}</td><td>{formatClp(cashIn)}</td><td>{formatClp(cashOut)}</td><td><strong>{formatClp(expected)}</strong></td><td>{shift.declaredCash === null ? "—" : formatClp(shift.declaredCash)}</td><td className={(shift.difference ?? 0) < 0 ? "admin-qty-negative" : (shift.difference ?? 0) > 0 ? "admin-qty-positive" : ""}>{shift.difference === null ? "—" : formatClp(shift.difference)}</td></tr>;
+            return <tr key={shift.id}><td>{shift.openedAt.toLocaleString("es-CL")}<small>{shift.closedAt ? `Cierre: ${shift.closedAt.toLocaleString("es-CL")}` : "Turno abierto"}</small></td><td>{shift.register.code}<small>{shift.register.name}</small></td><td>{shift.user.name}</td><td>{formatClp(totalSales)}<small>{shift.sales.length} ventas</small></td><td>{formatClp(shift.openingAmount)}</td><td>{formatClp(cashSales)}</td><td>{formatClp(cashIn)}</td><td>{formatClp(cashOut)}</td><td><strong>{formatClp(expected)}</strong></td><td>{shift.declaredCash === null ? "—" : formatClp(shift.declaredCash)}</td><td className={(shift.difference ?? 0) < 0 ? "admin-qty-negative" : (shift.difference ?? 0) > 0 ? "admin-qty-positive" : ""}>{shift.difference === null ? "—" : formatClp(shift.difference)}</td><td className="no-print"><Link href={`/admin/pos/turnos/${shift.id}`}>Ver reporte</Link></td></tr>;
           })}
         </tbody></table></div>
       </section>
