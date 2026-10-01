@@ -15,6 +15,7 @@
     "db:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
+    "admin:session-secret": "node -e \"console.log(require('node:crypto').randomBytes(48).toString('hex'))\"",
     "postinstall": "prisma generate"
   },
   "dependencies": {
