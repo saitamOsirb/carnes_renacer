@@ -88,26 +88,35 @@ enum WarehouseVisualObjectType {
   CUSTOM
 }
 
+enum WarehouseLocationMovementType {
+  ALLOCATE
+  INTERNAL_TRANSFER
+  ADJUST
+  UNASSIGN
+  SYSTEM_DECREMENT
+}
+
 model Product {
-  id                  String                      @id @default(cuid()) @db.VarChar(30)
-  slug                String                      @unique @db.VarChar(191)
-  name                String                      @db.VarChar(191)
-  description         String                      @db.Text
-  category            String                      @db.VarChar(100)
-  imageUrl            String                      @db.VarChar(500)
-  price               Int
-  unit                UnitType                    @default(KG)
-  stock               Int
-  reserved            Int                         @default(0)
-  active              Boolean                     @default(true)
-  featured            Boolean                     @default(false)
-  createdAt           DateTime                    @default(now()) @db.DateTime(3)
-  updatedAt           DateTime                    @updatedAt @db.DateTime(3)
-  orderItems          OrderItem[]
-  inventoryStocks     InventoryStock[]
-  inventoryMovements  InventoryMovement[]
-  posSaleItems        PosSaleItem[]
-  warehousePlacements WarehouseProductPlacement[]
+  id                         String                      @id @default(cuid()) @db.VarChar(30)
+  slug                       String                      @unique @db.VarChar(191)
+  name                       String                      @db.VarChar(191)
+  description                String                      @db.Text
+  category                   String                      @db.VarChar(100)
+  imageUrl                   String                      @db.VarChar(500)
+  price                      Int
+  unit                       UnitType                    @default(KG)
+  stock                      Int
+  reserved                   Int                         @default(0)
+  active                     Boolean                     @default(true)
+  featured                   Boolean                     @default(false)
+  createdAt                  DateTime                    @default(now()) @db.DateTime(3)
+  updatedAt                  DateTime                    @updatedAt @db.DateTime(3)
+  orderItems                 OrderItem[]
+  inventoryStocks            InventoryStock[]
+  inventoryMovements         InventoryMovement[]
+  posSaleItems               PosSaleItem[]
+  warehousePlacements        WarehouseProductPlacement[]
+  warehouseLocationMovements WarehouseLocationMovement[]
 
   @@index([active, category])
 }
@@ -127,21 +136,22 @@ model StoreSetting {
 }
 
 model Warehouse {
-  id                String                      @id @default(cuid()) @db.VarChar(30)
-  code              String                      @unique @db.VarChar(40)
-  name              String                      @db.VarChar(191)
-  address           String?                     @db.VarChar(255)
-  active            Boolean                     @default(true)
-  isDefault         Boolean                     @default(false)
-  createdAt         DateTime                    @default(now()) @db.DateTime(3)
-  updatedAt         DateTime                    @updatedAt @db.DateTime(3)
-  stocks            InventoryStock[]
-  movements         InventoryMovement[]
-  reservations      InventoryReservation[]
-  posSales          PosSale[]
-  cashRegisters     CashRegister[]
-  layout            WarehouseLayout?
-  productPlacements WarehouseProductPlacement[]
+  id                         String                      @id @default(cuid()) @db.VarChar(30)
+  code                       String                      @unique @db.VarChar(40)
+  name                       String                      @db.VarChar(191)
+  address                    String?                     @db.VarChar(255)
+  active                     Boolean                     @default(true)
+  isDefault                  Boolean                     @default(false)
+  createdAt                  DateTime                    @default(now()) @db.DateTime(3)
+  updatedAt                  DateTime                    @updatedAt @db.DateTime(3)
+  stocks                     InventoryStock[]
+  movements                  InventoryMovement[]
+  reservations               InventoryReservation[]
+  posSales                   PosSale[]
+  cashRegisters              CashRegister[]
+  layout                     WarehouseLayout?
+  productPlacements          WarehouseProductPlacement[]
+  warehouseLocationMovements WarehouseLocationMovement[]
 
   @@index([active, name])
 }
@@ -161,19 +171,19 @@ model WarehouseLayout {
 }
 
 model WarehouseVisualObject {
-  id         String                    @id @default(cuid()) @db.VarChar(30)
-  layoutId   String                    @db.VarChar(30)
+  id         String                      @id @default(cuid()) @db.VarChar(30)
+  layoutId   String                      @db.VarChar(30)
   type       WarehouseVisualObjectType
-  label      String                    @db.VarChar(120)
+  label      String                      @db.VarChar(120)
   xCm        Int
   zCm        Int
   widthCm    Int
   depthCm    Int
   heightCm   Int
-  rotation   Int                       @default(0)
-  createdAt  DateTime                  @default(now()) @db.DateTime(3)
-  updatedAt  DateTime                  @updatedAt @db.DateTime(3)
-  layout     WarehouseLayout           @relation(fields: [layoutId], references: [id], onDelete: Cascade)
+  rotation   Int                         @default(0)
+  createdAt  DateTime                    @default(now()) @db.DateTime(3)
+  updatedAt  DateTime                    @updatedAt @db.DateTime(3)
+  layout     WarehouseLayout             @relation(fields: [layoutId], references: [id], onDelete: Cascade)
   placements WarehouseProductPlacement[]
 
   @@index([layoutId])
@@ -184,16 +194,42 @@ model WarehouseProductPlacement {
   warehouseId  String                @db.VarChar(30)
   objectId     String                @db.VarChar(30)
   productId    String                @db.VarChar(30)
-  locationCode String?               @db.VarChar(80)
+  locationCode String                @default("") @db.VarChar(80)
+  quantity     Int                   @default(0)
   createdAt    DateTime              @default(now()) @db.DateTime(3)
   updatedAt    DateTime              @updatedAt @db.DateTime(3)
   warehouse    Warehouse             @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
   object       WarehouseVisualObject @relation(fields: [objectId], references: [id], onDelete: Cascade)
   product      Product               @relation(fields: [productId], references: [id], onDelete: Restrict)
 
-  @@unique([warehouseId, productId])
+  @@unique([objectId, productId, locationCode])
+  @@index([warehouseId, productId])
   @@index([objectId])
   @@index([productId])
+}
+
+model WarehouseLocationMovement {
+  id               String                        @id @default(cuid()) @db.VarChar(30)
+  warehouseId      String                        @db.VarChar(30)
+  productId        String                        @db.VarChar(30)
+  type             WarehouseLocationMovementType
+  quantity         Int
+  locatedAfter     Int
+  fromObjectId     String?                       @db.VarChar(30)
+  fromObjectLabel  String?                       @db.VarChar(120)
+  fromLocationCode String?                       @db.VarChar(80)
+  toObjectId       String?                       @db.VarChar(30)
+  toObjectLabel    String?                       @db.VarChar(120)
+  toLocationCode   String?                       @db.VarChar(80)
+  reference        String?                       @db.VarChar(100)
+  note             String?                       @db.VarChar(500)
+  actor            String                        @db.VarChar(80)
+  createdAt        DateTime                      @default(now()) @db.DateTime(3)
+  warehouse        Warehouse                     @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  product          Product                       @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([warehouseId, createdAt])
+  @@index([productId, createdAt])
 }
 
 model InventoryStock {

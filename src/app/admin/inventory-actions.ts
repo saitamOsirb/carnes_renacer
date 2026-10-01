@@ -7,6 +7,7 @@ import { redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/admin-auth";
 import { syncProductInventory } from "@/lib/inventory-service";
 import { prisma } from "@/lib/prisma";
+import { reconcileWarehouseLocationStock } from "@/lib/warehouse-location-service";
 
 function text(formData: FormData, key: string, max = 500): string {
   const value = formData.get(key);
@@ -42,6 +43,7 @@ function refreshInventory(): void {
   revalidatePath("/checkout");
   revalidatePath("/admin/productos");
   revalidatePath("/admin/inventario");
+  revalidatePath("/admin/inventario/mapa");
 }
 
 export async function createWarehouse(formData: FormData): Promise<void> {
@@ -127,6 +129,7 @@ export async function applyStockMovement(formData: FormData): Promise<void> {
   if (!warehouse?.active) redirect(statusUrl("error", "La bodega seleccionada no está activa."));
   if (!product) redirect(statusUrl("error", "Producto no encontrado."));
 
+  const reference = `ADM-${randomUUID().slice(0, 12)}`;
   try {
     await prisma.$transaction(async (tx) => {
       const stock = await tx.inventoryStock.upsert({
@@ -166,10 +169,15 @@ export async function applyStockMovement(formData: FormData): Promise<void> {
             onHandAfter: newOnHand,
             reservedAfter: stock.reserved,
             note: note || null,
-            reference: `ADM-${randomUUID().slice(0, 12)}`,
+            reference,
           },
         });
       }
+      await reconcileWarehouseLocationStock(tx, warehouseId, productId, newOnHand, {
+        reference,
+        note: `Reconciliación por movimiento administrativo${note ? ` · ${note}` : ""}`,
+        actor: process.env.ADMIN_USERNAME?.trim() || "admin",
+      });
       await syncProductInventory(tx, productId);
     });
   } catch (error) {
@@ -215,6 +223,7 @@ export async function transferStock(formData: FormData): Promise<void> {
         create: { warehouseId: targetWarehouseId, productId, onHand: 0, reserved: 0, minStock: 0 },
       });
 
+      const sourceOnHandAfter = source.onHand - quantity;
       await tx.inventoryStock.update({ where: { id: source.id }, data: { onHand: { decrement: quantity } } });
       await tx.inventoryStock.update({ where: { id: target.id }, data: { onHand: { increment: quantity } } });
       await tx.inventoryMovement.createMany({
@@ -224,7 +233,7 @@ export async function transferStock(formData: FormData): Promise<void> {
             productId,
             type: InventoryMovementType.TRANSFER_OUT,
             quantity: -quantity,
-            onHandAfter: source.onHand - quantity,
+            onHandAfter: sourceOnHandAfter,
             reservedAfter: source.reserved,
             note: note || `Transferencia hacia ${targetWarehouse.name}`,
             reference,
@@ -241,6 +250,11 @@ export async function transferStock(formData: FormData): Promise<void> {
           },
         ],
       });
+      await reconcileWarehouseLocationStock(tx, sourceWarehouseId, productId, sourceOnHandAfter, {
+        reference,
+        note: `Salida de ubicación por transferencia hacia ${targetWarehouse.name}`,
+        actor: process.env.ADMIN_USERNAME?.trim() || "admin",
+      });
       await syncProductInventory(tx, productId);
     });
   } catch (error) {
@@ -250,7 +264,7 @@ export async function transferStock(formData: FormData): Promise<void> {
   }
 
   refreshInventory();
-  redirect(statusUrl("ok", "Transferencia registrada correctamente."));
+  redirect(statusUrl("ok", "Transferencia registrada correctamente. El stock recibido queda pendiente de ubicación en la bodega destino."));
 }
 
 export async function updateMinimumStock(formData: FormData): Promise<void> {

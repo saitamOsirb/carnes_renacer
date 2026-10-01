@@ -1,9 +1,10 @@
 "use server";
 
-import { WarehouseVisualObjectType } from "@prisma/client";
+import { Prisma, WarehouseLocationMovementType, WarehouseVisualObjectType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/admin-auth";
+import { getLocatedWarehouseQuantity } from "@/lib/warehouse-location-service";
 import { prisma } from "@/lib/prisma";
 
 const MAX_OBJECTS = 180;
@@ -14,6 +15,13 @@ function text(formData: FormData, key: string, max = 500): string {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
+function integer(formData: FormData, key: string, min = 0, max = 100_000_000): number | null {
+  const raw = text(formData, key, 30);
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= min && value <= max ? value : null;
+}
+
 function metersToCm(formData: FormData, key: string, minCm: number, maxCm: number): number | null {
   const raw = text(formData, key, 30).replace(",", ".");
   if (!raw) return null;
@@ -21,6 +29,20 @@ function metersToCm(formData: FormData, key: string, minCm: number, maxCm: numbe
   if (!Number.isFinite(meters)) return null;
   const cm = Math.round(meters * 100);
   return cm >= minCm && cm <= maxCm ? cm : null;
+}
+
+function normalizeLocationCode(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^A-Z0-9._/-]/g, "")
+    .slice(0, 80);
+}
+
+function actorName(): string {
+  return (process.env.ADMIN_USERNAME?.trim() || "admin").slice(0, 80);
 }
 
 function mapUrl(warehouseId: string, type: "ok" | "error", message: string): string {
@@ -116,9 +138,7 @@ export async function saveWarehouseDimensions(formData: FormData): Promise<void>
   });
   if (existing) {
     const outside = existing.objects.find((object) => object.xCm + object.widthCm > widthCm || object.zCm + object.depthCm > depthCm || object.heightCm > heightCm);
-    if (outside) {
-      redirect(mapUrl(warehouseId, "error", `El objeto ${outside.label} quedaría fuera de las nuevas dimensiones.`));
-    }
+    if (outside) redirect(mapUrl(warehouseId, "error", `El objeto ${outside.label} quedaría fuera de las nuevas dimensiones.`));
   }
 
   await prisma.warehouseLayout.upsert({
@@ -149,7 +169,7 @@ export async function saveWarehouseScene(formData: FormData): Promise<void> {
 
   const layout = await prisma.warehouseLayout.findUnique({
     where: { warehouseId },
-    include: { objects: { select: { id: true } } },
+    include: { objects: { include: { placements: true } } },
   });
   if (!layout) redirect(mapUrl(warehouseId, "error", "Primero configura las dimensiones de la bodega."));
 
@@ -162,8 +182,40 @@ export async function saveWarehouseScene(formData: FormData): Promise<void> {
 
   const existingIds = new Set(layout.objects.map((object) => object.id));
   const retainedIds = objects.filter((object) => existingIds.has(object.id)).map((object) => object.id);
+  const retainedSet = new Set(retainedIds);
+  const removedObjects = layout.objects.filter((object) => !retainedSet.has(object.id));
 
   await prisma.$transaction(async (tx) => {
+    if (removedObjects.length > 0) {
+      const affectedProducts = [...new Set(removedObjects.flatMap((object) => object.placements.map((placement) => placement.productId)))];
+      const runningLocated = new Map<string, number>();
+      for (const productId of affectedProducts) {
+        runningLocated.set(productId, await getLocatedWarehouseQuantity(tx, warehouseId, productId));
+      }
+
+      for (const object of removedObjects) {
+        for (const placement of object.placements) {
+          const locatedAfter = Math.max(0, (runningLocated.get(placement.productId) ?? 0) - placement.quantity);
+          runningLocated.set(placement.productId, locatedAfter);
+          await tx.warehouseLocationMovement.create({
+            data: {
+              warehouseId,
+              productId: placement.productId,
+              type: WarehouseLocationMovementType.UNASSIGN,
+              quantity: -placement.quantity,
+              locatedAfter,
+              fromObjectId: object.id,
+              fromObjectLabel: object.label,
+              fromLocationCode: placement.locationCode || null,
+              reference: "MAP-OBJECT-DELETE",
+              note: "Ubicación liberada al eliminar el objeto del plano",
+              actor: actorName(),
+            },
+          });
+        }
+      }
+    }
+
     await tx.warehouseVisualObject.deleteMany({
       where: {
         layoutId: layout.id,
@@ -188,7 +240,7 @@ export async function saveWarehouseScene(formData: FormData): Promise<void> {
         await tx.warehouseVisualObject.create({ data: { layoutId: layout.id, ...data } });
       }
     }
-  });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
   refreshWarehouseMap();
   redirect(mapUrl(warehouseId, "ok", "Plano virtual guardado correctamente."));
@@ -199,43 +251,280 @@ export async function assignWarehouseProduct(formData: FormData): Promise<void> 
   const warehouseId = text(formData, "warehouseId", 30);
   const productId = text(formData, "productId", 30);
   const objectId = text(formData, "objectId", 30);
-  const locationCode = text(formData, "locationCode", 80);
+  const locationCode = normalizeLocationCode(text(formData, "locationCode", 80));
+  const quantity = integer(formData, "quantity", 1, 10_000_000);
 
-  if (!warehouseId || !productId || !objectId) {
-    redirect(mapUrl(warehouseId, "error", "Selecciona producto y ubicación física."));
+  if (!warehouseId || !productId || !objectId || quantity === null) {
+    redirect(mapUrl(warehouseId, "error", "Selecciona producto, ubicación y una cantidad válida."));
   }
 
-  const [object, stock] = await Promise.all([
-    prisma.warehouseVisualObject.findFirst({
-      where: { id: objectId, layout: { warehouseId } },
-      select: { id: true, label: true },
-    }),
-    prisma.inventoryStock.findUnique({
-      where: { warehouseId_productId: { warehouseId, productId } },
-      include: { product: { select: { name: true } } },
-    }),
-  ]);
+  let message = "Stock ubicado correctamente.";
+  try {
+    message = await prisma.$transaction(async (tx) => {
+      const [object, stock] = await Promise.all([
+        tx.warehouseVisualObject.findFirst({
+          where: { id: objectId, layout: { warehouseId } },
+          select: { id: true, label: true },
+        }),
+        tx.inventoryStock.findUnique({
+          where: { warehouseId_productId: { warehouseId, productId } },
+          include: { product: { select: { name: true } } },
+        }),
+      ]);
+      if (!object) throw new Error("INVALID_LOCATION");
+      if (!stock) throw new Error("MISSING_STOCK");
 
-  if (!object) redirect(mapUrl(warehouseId, "error", "La ubicación seleccionada no pertenece a esta bodega."));
-  if (!stock) redirect(mapUrl(warehouseId, "error", "Ese producto todavía no tiene una posición de inventario en esta bodega."));
+      const located = await getLocatedWarehouseQuantity(tx, warehouseId, productId);
+      const unlocated = Math.max(0, stock.onHand - located);
+      if (quantity > unlocated) throw new Error("OVER_ALLOCATE");
 
-  await prisma.warehouseProductPlacement.upsert({
-    where: { warehouseId_productId: { warehouseId, productId } },
-    update: { objectId, locationCode: locationCode || null },
-    create: { warehouseId, productId, objectId, locationCode: locationCode || null },
-  });
+      const existing = await tx.warehouseProductPlacement.findFirst({
+        where: { warehouseId, productId, objectId, locationCode },
+      });
+      if (existing) {
+        await tx.warehouseProductPlacement.update({
+          where: { id: existing.id },
+          data: { quantity: { increment: quantity } },
+        });
+      } else {
+        await tx.warehouseProductPlacement.create({
+          data: { warehouseId, productId, objectId, locationCode, quantity },
+        });
+      }
+
+      await tx.warehouseLocationMovement.create({
+        data: {
+          warehouseId,
+          productId,
+          type: WarehouseLocationMovementType.ALLOCATE,
+          quantity,
+          locatedAfter: located + quantity,
+          toObjectId: object.id,
+          toObjectLabel: object.label,
+          toLocationCode: locationCode || null,
+          note: "Asignación manual de stock a ubicación física",
+          actor: actorName(),
+        },
+      });
+
+      return `${stock.product.name}: ${quantity} ubicados en ${object.label}${locationCode ? ` · ${locationCode}` : ""}.`;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Error && error.message === "INVALID_LOCATION") redirect(mapUrl(warehouseId, "error", "La ubicación seleccionada no pertenece a esta bodega."));
+    if (error instanceof Error && error.message === "MISSING_STOCK") redirect(mapUrl(warehouseId, "error", "Ese producto todavía no tiene inventario en esta bodega."));
+    if (error instanceof Error && error.message === "OVER_ALLOCATE") redirect(mapUrl(warehouseId, "error", "La cantidad supera el stock físico que queda sin ubicar."));
+    throw error;
+  }
 
   refreshWarehouseMap();
-  redirect(mapUrl(warehouseId, "ok", `${stock.product.name} ubicado en ${object.label}.`));
+  redirect(mapUrl(warehouseId, "ok", message));
+}
+
+export async function moveWarehouseLocationStock(formData: FormData): Promise<void> {
+  await requireAdmin();
+  const warehouseId = text(formData, "warehouseId", 30);
+  const sourcePlacementId = text(formData, "sourcePlacementId", 30);
+  const targetObjectId = text(formData, "targetObjectId", 30);
+  const targetLocationCode = normalizeLocationCode(text(formData, "targetLocationCode", 80));
+  const quantity = integer(formData, "quantity", 1, 10_000_000);
+  const note = text(formData, "note", 500);
+
+  if (!warehouseId || !sourcePlacementId || !targetObjectId || quantity === null) {
+    redirect(mapUrl(warehouseId, "error", "Movimiento interno inválido."));
+  }
+
+  let message = "Movimiento interno registrado.";
+  try {
+    message = await prisma.$transaction(async (tx) => {
+      const [source, targetObject] = await Promise.all([
+        tx.warehouseProductPlacement.findUnique({
+          where: { id: sourcePlacementId },
+          include: { object: true, product: { select: { name: true } } },
+        }),
+        tx.warehouseVisualObject.findFirst({
+          where: { id: targetObjectId, layout: { warehouseId } },
+          select: { id: true, label: true },
+        }),
+      ]);
+      if (!source || source.warehouseId !== warehouseId) throw new Error("INVALID_SOURCE");
+      if (!targetObject) throw new Error("INVALID_TARGET");
+      if (quantity > source.quantity) throw new Error("INSUFFICIENT_LOCATION_STOCK");
+      if (source.objectId === targetObject.id && source.locationCode === targetLocationCode) throw new Error("SAME_LOCATION");
+
+      const located = await getLocatedWarehouseQuantity(tx, warehouseId, source.productId);
+      const target = await tx.warehouseProductPlacement.findFirst({
+        where: {
+          warehouseId,
+          productId: source.productId,
+          objectId: targetObject.id,
+          locationCode: targetLocationCode,
+        },
+      });
+
+      if (quantity === source.quantity) {
+        await tx.warehouseProductPlacement.delete({ where: { id: source.id } });
+      } else {
+        await tx.warehouseProductPlacement.update({
+          where: { id: source.id },
+          data: { quantity: { decrement: quantity } },
+        });
+      }
+
+      if (target) {
+        await tx.warehouseProductPlacement.update({
+          where: { id: target.id },
+          data: { quantity: { increment: quantity } },
+        });
+      } else {
+        await tx.warehouseProductPlacement.create({
+          data: {
+            warehouseId,
+            productId: source.productId,
+            objectId: targetObject.id,
+            locationCode: targetLocationCode,
+            quantity,
+          },
+        });
+      }
+
+      await tx.warehouseLocationMovement.create({
+        data: {
+          warehouseId,
+          productId: source.productId,
+          type: WarehouseLocationMovementType.INTERNAL_TRANSFER,
+          quantity,
+          locatedAfter: located,
+          fromObjectId: source.objectId,
+          fromObjectLabel: source.object.label,
+          fromLocationCode: source.locationCode || null,
+          toObjectId: targetObject.id,
+          toObjectLabel: targetObject.label,
+          toLocationCode: targetLocationCode || null,
+          note: note || "Transferencia interna entre ubicaciones",
+          actor: actorName(),
+        },
+      });
+
+      return `${source.product.name}: ${quantity} movidos de ${source.object.label} a ${targetObject.label}.`;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Error && error.message === "INVALID_SOURCE") redirect(mapUrl(warehouseId, "error", "La ubicación de origen ya no existe."));
+    if (error instanceof Error && error.message === "INVALID_TARGET") redirect(mapUrl(warehouseId, "error", "La ubicación de destino no pertenece a esta bodega."));
+    if (error instanceof Error && error.message === "INSUFFICIENT_LOCATION_STOCK") redirect(mapUrl(warehouseId, "error", "La ubicación de origen no contiene esa cantidad."));
+    if (error instanceof Error && error.message === "SAME_LOCATION") redirect(mapUrl(warehouseId, "error", "Origen y destino son la misma ubicación."));
+    throw error;
+  }
+
+  refreshWarehouseMap();
+  redirect(mapUrl(warehouseId, "ok", message));
+}
+
+export async function adjustWarehouseProductPlacementQuantity(formData: FormData): Promise<void> {
+  await requireAdmin();
+  const warehouseId = text(formData, "warehouseId", 30);
+  const placementId = text(formData, "placementId", 30);
+  const newQuantity = integer(formData, "newQuantity", 0, 10_000_000);
+  const note = text(formData, "note", 500);
+
+  if (!warehouseId || !placementId || newQuantity === null) {
+    redirect(mapUrl(warehouseId, "error", "Ajuste de ubicación inválido."));
+  }
+
+  let message = "Distribución actualizada.";
+  try {
+    message = await prisma.$transaction(async (tx) => {
+      const placement = await tx.warehouseProductPlacement.findUnique({
+        where: { id: placementId },
+        include: { object: true, product: { select: { name: true } } },
+      });
+      if (!placement || placement.warehouseId !== warehouseId) throw new Error("INVALID_PLACEMENT");
+
+      const stock = await tx.inventoryStock.findUnique({
+        where: { warehouseId_productId: { warehouseId, productId: placement.productId } },
+      });
+      if (!stock) throw new Error("MISSING_STOCK");
+
+      const located = await getLocatedWarehouseQuantity(tx, warehouseId, placement.productId);
+      const locatedWithoutCurrent = located - placement.quantity;
+      const locatedAfter = locatedWithoutCurrent + newQuantity;
+      if (locatedAfter > stock.onHand) throw new Error("OVER_ALLOCATE");
+
+      const delta = newQuantity - placement.quantity;
+      if (newQuantity === 0) {
+        await tx.warehouseProductPlacement.delete({ where: { id: placement.id } });
+      } else {
+        await tx.warehouseProductPlacement.update({ where: { id: placement.id }, data: { quantity: newQuantity } });
+      }
+
+      if (delta !== 0) {
+        await tx.warehouseLocationMovement.create({
+          data: {
+            warehouseId,
+            productId: placement.productId,
+            type: WarehouseLocationMovementType.ADJUST,
+            quantity: delta,
+            locatedAfter,
+            fromObjectId: placement.objectId,
+            fromObjectLabel: placement.object.label,
+            fromLocationCode: placement.locationCode || null,
+            toObjectId: newQuantity > 0 ? placement.objectId : null,
+            toObjectLabel: newQuantity > 0 ? placement.object.label : null,
+            toLocationCode: newQuantity > 0 ? placement.locationCode || null : null,
+            note: note || "Ajuste manual de distribución física",
+            actor: actorName(),
+          },
+        });
+      }
+
+      return `${placement.product.name}: ubicación ajustada a ${newQuantity}.`;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Error && error.message === "INVALID_PLACEMENT") redirect(mapUrl(warehouseId, "error", "La ubicación indicada ya no existe."));
+    if (error instanceof Error && error.message === "MISSING_STOCK") redirect(mapUrl(warehouseId, "error", "No existe inventario para ese producto."));
+    if (error instanceof Error && error.message === "OVER_ALLOCATE") redirect(mapUrl(warehouseId, "error", "El ajuste dejaría más stock ubicado que stock físico disponible."));
+    throw error;
+  }
+
+  refreshWarehouseMap();
+  redirect(mapUrl(warehouseId, "ok", message));
 }
 
 export async function removeWarehouseProductPlacement(formData: FormData): Promise<void> {
   await requireAdmin();
   const warehouseId = text(formData, "warehouseId", 30);
-  const productId = text(formData, "productId", 30);
-  if (!warehouseId || !productId) redirect(mapUrl(warehouseId, "error", "Ubicación de producto inválida."));
+  const placementId = text(formData, "placementId", 30);
+  if (!warehouseId || !placementId) redirect(mapUrl(warehouseId, "error", "Ubicación de producto inválida."));
 
-  await prisma.warehouseProductPlacement.deleteMany({ where: { warehouseId, productId } });
+  try {
+    await prisma.$transaction(async (tx) => {
+      const placement = await tx.warehouseProductPlacement.findUnique({
+        where: { id: placementId },
+        include: { object: true },
+      });
+      if (!placement || placement.warehouseId !== warehouseId) throw new Error("INVALID_PLACEMENT");
+      const located = await getLocatedWarehouseQuantity(tx, warehouseId, placement.productId);
+
+      await tx.warehouseProductPlacement.delete({ where: { id: placement.id } });
+      await tx.warehouseLocationMovement.create({
+        data: {
+          warehouseId,
+          productId: placement.productId,
+          type: WarehouseLocationMovementType.UNASSIGN,
+          quantity: -placement.quantity,
+          locatedAfter: Math.max(0, located - placement.quantity),
+          fromObjectId: placement.objectId,
+          fromObjectLabel: placement.object.label,
+          fromLocationCode: placement.locationCode || null,
+          note: "Stock devuelto a pendiente de ubicación",
+          actor: actorName(),
+        },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Error && error.message === "INVALID_PLACEMENT") redirect(mapUrl(warehouseId, "error", "La ubicación indicada ya no existe."));
+    throw error;
+  }
+
   refreshWarehouseMap();
-  redirect(mapUrl(warehouseId, "ok", "Producto retirado del mapa virtual; el stock real no fue modificado."));
+  redirect(mapUrl(warehouseId, "ok", "Ubicación liberada; la cantidad vuelve a stock sin ubicar y el inventario físico no cambia."));
 }

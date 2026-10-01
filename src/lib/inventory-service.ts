@@ -2,6 +2,7 @@ import "server-only";
 
 import { InventoryMovementType, Prisma } from "@prisma/client";
 import { HttpError } from "@/lib/security";
+import { reconcileWarehouseLocationStock } from "@/lib/warehouse-location-service";
 
 type InventoryTx = Prisma.TransactionClient;
 
@@ -142,6 +143,7 @@ export async function consumeItemInventoryReservation(tx: InventoryTx, item: Res
       throw new HttpError(409, `Inventario inconsistente para ${item.productName}.`, "INVENTORY_INVALID");
     }
 
+    const onHandAfter = stock.onHand - reservation.quantity;
     await tx.inventoryStock.update({
       where: { id: stock.id },
       data: {
@@ -155,11 +157,16 @@ export async function consumeItemInventoryReservation(tx: InventoryTx, item: Res
         productId: item.productId,
         type: InventoryMovementType.SALE,
         quantity: -reservation.quantity,
-        onHandAfter: stock.onHand - reservation.quantity,
+        onHandAfter,
         reservedAfter: stock.reserved - reservation.quantity,
         note: `Salida por venta de ${item.productName}`,
         reference: item.id,
       },
+    });
+    await reconcileWarehouseLocationStock(tx, reservation.warehouseId, item.productId, onHandAfter, {
+      reference: item.id,
+      note: `Salida automática de ubicación por venta de ${item.productName}`,
+      actor: "order",
     });
   }
 

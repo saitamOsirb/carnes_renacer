@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { InventoryMovementType, PosPaymentMethod, PosShiftStatus, Prisma, type PosSale } from "@prisma/client";
 import { syncProductInventory } from "@/lib/inventory-service";
 import { prisma } from "@/lib/prisma";
+import { reconcileWarehouseLocationStock } from "@/lib/warehouse-location-service";
 
 export type PosSaleLineInput = {
   productId: string;
@@ -116,6 +117,7 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
 
     const number = saleNumber();
     for (const line of lines) {
+      const onHandAfter = line.stock.onHand - line.quantity;
       const updated = await tx.inventoryStock.updateMany({
         where: { id: line.stock.id, onHand: line.stock.onHand, reserved: line.stock.reserved },
         data: { onHand: { decrement: line.quantity } },
@@ -128,11 +130,16 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
           productId: line.product.id,
           type: InventoryMovementType.SALE,
           quantity: -line.quantity,
-          onHandAfter: line.stock.onHand - line.quantity,
+          onHandAfter,
           reservedAfter: line.stock.reserved,
           note: `Venta POS ${number} · ${shift.register.name} · ${shift.user.name}`,
           reference: number,
         },
+      });
+      await reconcileWarehouseLocationStock(tx, warehouseId, line.product.id, onHandAfter, {
+        reference: number,
+        note: `Salida automática de ubicación por venta POS ${number}`,
+        actor: shift.user.username,
       });
       await syncProductInventory(tx, line.product.id);
     }
