@@ -23,14 +23,19 @@ export default async function PosSaleReceiptPage({ params }: { params: Promise<{
   const { id } = await params;
   const sale = await prisma.posSale.findUnique({
     where: { id },
-    include: { warehouse: true, items: { orderBy: { productName: "asc" } } },
+    include: {
+      warehouse: true,
+      cashierUser: true,
+      shift: { include: { register: true, user: true } },
+      items: { orderBy: { productName: "asc" } },
+    },
   });
   if (!sale) notFound();
 
   return (
     <div className="admin-content admin-content-narrow pos-receipt-page">
       <div className="pos-receipt-actions no-print">
-        <Link href="/admin/pos" className="admin-button admin-button-secondary">← Volver al POS</Link>
+        <Link href={sale.shiftId ? `/admin/pos?shift=${sale.shiftId}` : "/admin/pos"} className="admin-button admin-button-secondary">← Volver al POS</Link>
         <PrintButton />
       </div>
 
@@ -43,8 +48,10 @@ export default async function PosSaleReceiptPage({ params }: { params: Promise<{
         </header>
 
         <section className="pos-receipt-meta">
+          {sale.shift?.register && <div><span>Caja</span><strong>{sale.shift.register.code} · {sale.shift.register.name}</strong></div>}
           <div><span>Bodega</span><strong>{sale.warehouse.code} · {sale.warehouse.name}</strong></div>
-          <div><span>Cajero</span><strong>{sale.cashier}</strong></div>
+          <div><span>Cajero</span><strong>{sale.shift?.user.name ?? sale.cashierUser?.name ?? sale.cashier}</strong></div>
+          {sale.shiftId && <div><span>Turno</span><strong>{sale.shiftId.slice(-8).toUpperCase()}</strong></div>}
           <div><span>Medio de pago</span><strong>{paymentLabels[sale.paymentMethod]}</strong></div>
           {sale.customerName && <div><span>Cliente</span><strong>{sale.customerName}</strong></div>}
           {sale.customerRut && <div><span>RUT</span><strong>{sale.customerRut}</strong></div>}
