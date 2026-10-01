@@ -46,6 +46,14 @@ enum InventoryMovementType {
   SALE
 }
 
+enum PosPaymentMethod {
+  CASH
+  DEBIT_CARD
+  CREDIT_CARD
+  TRANSFER
+  OTHER
+}
+
 model Product {
   id                 String              @id @default(cuid()) @db.VarChar(30)
   slug               String              @unique @db.VarChar(191)
@@ -64,6 +72,7 @@ model Product {
   orderItems         OrderItem[]
   inventoryStocks    InventoryStock[]
   inventoryMovements InventoryMovement[]
+  posSaleItems       PosSaleItem[]
 
   @@index([active, category])
 }
@@ -94,6 +103,7 @@ model Warehouse {
   stocks       InventoryStock[]
   movements    InventoryMovement[]
   reservations InventoryReservation[]
+  posSales     PosSale[]
 
   @@index([active, name])
 }
@@ -143,6 +153,44 @@ model InventoryReservation {
 
   @@unique([orderItemId, warehouseId])
   @@index([warehouseId])
+}
+
+model PosSale {
+  id             String           @id @default(cuid()) @db.VarChar(30)
+  saleNumber     String           @unique @db.VarChar(40)
+  warehouseId    String           @db.VarChar(30)
+  customerName   String?          @db.VarChar(191)
+  customerRut    String?          @db.VarChar(20)
+  subtotal       Int
+  discount       Int              @default(0)
+  total          Int
+  paymentMethod  PosPaymentMethod
+  amountReceived Int?
+  changeDue      Int              @default(0)
+  notes          String?          @db.VarChar(500)
+  cashier        String           @db.VarChar(80)
+  createdAt      DateTime         @default(now()) @db.DateTime(3)
+  warehouse      Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  items          PosSaleItem[]
+
+  @@index([createdAt])
+  @@index([warehouseId, createdAt])
+}
+
+model PosSaleItem {
+  id          String   @id @default(cuid()) @db.VarChar(30)
+  saleId      String   @db.VarChar(30)
+  productId   String   @db.VarChar(30)
+  productName String   @db.VarChar(191)
+  unit        UnitType
+  quantity    Int
+  unitPrice   Int
+  subtotal    Int
+  sale        PosSale  @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([saleId])
+  @@index([productId])
 }
 
 model Order {
