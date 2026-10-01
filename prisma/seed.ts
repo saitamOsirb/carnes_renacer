@@ -3,6 +3,7 @@ import { catalogProducts } from "../src/data/catalog";
 
 const prisma = new PrismaClient();
 const DEFAULT_WAREHOUSE_ID = "warehouse-central";
+const DEFAULT_CASH_REGISTER_ID = "cash-register-1";
 
 async function main() {
   const warehouse = await prisma.warehouse.upsert({
@@ -14,6 +15,18 @@ async function main() {
       name: "Bodega principal",
       active: true,
       isDefault: true,
+    },
+  });
+
+  await prisma.cashRegister.upsert({
+    where: { id: DEFAULT_CASH_REGISTER_ID },
+    update: {},
+    create: {
+      id: DEFAULT_CASH_REGISTER_ID,
+      code: "CAJA-1",
+      name: "Caja 1",
+      warehouseId: warehouse.id,
+      active: true,
     },
   });
 
@@ -82,7 +95,7 @@ async function main() {
     },
   });
 
-  console.log(`Seed verificado: ${catalogProducts.length} productos base e inventario inicial sin sobrescribir cambios administrativos.`);
+  console.log(`Seed verificado: ${catalogProducts.length} productos base, inventario inicial y caja POS sin sobrescribir cambios administrativos.`);
 }
 
 main()
