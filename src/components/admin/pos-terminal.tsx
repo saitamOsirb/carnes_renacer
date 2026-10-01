@@ -15,12 +15,21 @@ type PosProduct = {
   available: number;
 };
 
+type PosCustomer = {
+  id: string;
+  name: string;
+  rut: string | null;
+  email: string | null;
+  phone: string | null;
+};
+
 type PosTerminalProps = {
   shiftId: string;
   registerName: string;
   cashierName: string;
   warehouseName: string;
   products: PosProduct[];
+  customers: PosCustomer[];
 };
 
 type CartLine = {
@@ -32,13 +41,14 @@ function unitLabel(unit: PosProduct["unit"]): string {
   return unit === "KG" ? "kg" : "un.";
 }
 
-export function PosTerminal({ shiftId, registerName, cashierName, warehouseName, products }: PosTerminalProps) {
+export function PosTerminal({ shiftId, registerName, cashierName, warehouseName, products, customers }: PosTerminalProps) {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("ALL");
   const [cart, setCart] = useState<CartLine[]>([]);
   const [discount, setDiscount] = useState("0");
   const [paymentMethod, setPaymentMethod] = useState("CASH");
   const [amountReceived, setAmountReceived] = useState("");
+  const [customerId, setCustomerId] = useState("");
 
   const productMap = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
   const categories = useMemo(() => [...new Set(products.map((product) => product.category))].sort((a, b) => a.localeCompare(b, "es")), [products]);
@@ -51,6 +61,7 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
     });
   }, [products, search, category]);
 
+  const selectedCustomer = customers.find((customer) => customer.id === customerId) ?? null;
   const cartDetailed = cart.flatMap((line) => {
     const product = productMap.get(line.productId);
     return product ? [{ ...line, product }] : [];
@@ -124,6 +135,7 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
           <input type="hidden" name="shiftId" value={shiftId} />
           <input type="hidden" name="items" value={JSON.stringify(cart)} />
           <input type="hidden" name="discount" value={discountValue} />
+          <input type="hidden" name="customerId" value={customerId} />
 
           <div className="pos-cart-heading">
             <div><span className="admin-kicker">Caja</span><h2>Venta actual</h2></div>
@@ -146,11 +158,25 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
           </div>
 
           <div className="pos-customer-grid">
-            <label>Cliente <small>(opcional)</small><input name="customerName" maxLength={191} placeholder="Nombre del cliente" /></label>
-            <label>RUT <small>(opcional)</small><input name="customerRut" maxLength={20} placeholder="12.345.678-5" /></label>
+            <label>Cliente registrado <small>(opcional)</small>
+              <select value={customerId} onChange={(event) => setCustomerId(event.target.value)}>
+                <option value="">Cliente ocasional · no guardar datos personales</option>
+                {customers.map((customer) => (
+                  <option key={customer.id} value={customer.id}>{customer.name}{customer.rut ? ` · ${customer.rut}` : ""}</option>
+                ))}
+              </select>
+            </label>
+            <div className="admin-inline-notice">
+              {selectedCustomer ? (
+                <><strong>{selectedCustomer.name}</strong>{selectedCustomer.rut ? ` · ${selectedCustomer.rut}` : ""}<br /><small>{selectedCustomer.email ?? selectedCustomer.phone ?? "Sin canal de contacto registrado"}</small></>
+              ) : (
+                <>No se almacenarán nombre, RUT, correo ni teléfono para esta venta.</>
+              )}
+              <br /><a href="/admin/clientes" target="_blank" rel="noreferrer">Registrar o editar cliente</a>
+            </div>
           </div>
 
-          <label className="pos-field">Observación <small>(opcional)</small><textarea name="notes" rows={2} maxLength={500} placeholder="Pedido, referencia, comentario de caja…" /></label>
+          <label className="pos-field">Observación de venta <small>(opcional, no ingreses datos sensibles)</small><textarea name="notes" rows={2} maxLength={500} placeholder="Referencia operativa de la venta…" /></label>
 
           <div className="pos-totals">
             <div><span>Subtotal</span><strong>{formatClp(subtotal)}</strong></div>

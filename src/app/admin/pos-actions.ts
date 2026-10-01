@@ -68,8 +68,7 @@ export async function createPosSaleAction(formData: FormData): Promise<void> {
       discount,
       paymentMethod,
       amountReceived,
-      customerName: text(formData, "customerName", 191),
-      customerRut: text(formData, "customerRut", 20),
+      customerId: text(formData, "customerId", 30) || undefined,
       notes: text(formData, "notes", 500),
     });
   } catch (error) {
@@ -85,5 +84,6 @@ export async function createPosSaleAction(formData: FormData): Promise<void> {
   revalidatePath("/admin/inventario");
   revalidatePath("/admin/pos");
   revalidatePath("/admin/pos/reportes");
+  revalidatePath("/admin/clientes");
   redirect(statusUrl("ok", `Venta ${sale.saleNumber} registrada correctamente.`, sale.id, shiftId));
 }

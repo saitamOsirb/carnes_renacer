@@ -44,10 +44,16 @@ function configUrl(type: "ok" | "error", message: string): string {
   return `/admin/pos/configuracion?${type}=${encodeURIComponent(message)}`;
 }
 
+function registerUrl(type: "ok" | "error", message: string): string {
+  return `/admin/pos/cajas?${type}=${encodeURIComponent(message)}`;
+}
+
 function refreshPos(): void {
   revalidatePath("/admin/pos");
   revalidatePath("/admin/pos/configuracion");
+  revalidatePath("/admin/pos/cajas");
   revalidatePath("/admin/pos/reportes");
+  revalidatePath("/admin/clientes");
 }
 
 export async function createPosUser(formData: FormData): Promise<void> {
@@ -103,39 +109,39 @@ export async function createCashRegister(formData: FormData): Promise<void> {
   const name = text(formData, "name", 191);
   const code = normalizeCode(text(formData, "code", 40));
   const warehouseId = text(formData, "warehouseId", 30);
-  if (name.length < 2 || code.length < 2 || !warehouseId) redirect(configUrl("error", "Completa código, nombre y bodega de la caja."));
-  if (await prisma.cashRegister.findUnique({ where: { code }, select: { id: true } })) redirect(configUrl("error", `La caja ${code} ya existe.`));
+  if (name.length < 2 || code.length < 2 || !warehouseId) redirect(registerUrl("error", "Completa código, nombre y bodega de la caja."));
+  if (await prisma.cashRegister.findUnique({ where: { code }, select: { id: true } })) redirect(registerUrl("error", `La caja ${code} ya existe.`));
   const warehouse = await prisma.warehouse.findUnique({ where: { id: warehouseId } });
-  if (!warehouse?.active) redirect(configUrl("error", "La bodega seleccionada no está activa."));
+  if (!warehouse?.active) redirect(registerUrl("error", "La bodega seleccionada no está activa."));
 
   await prisma.cashRegister.create({ data: { code, name, warehouseId, active: true } });
   refreshPos();
-  redirect(configUrl("ok", `Caja ${name} creada.`));
+  redirect(registerUrl("ok", `Caja ${name} creada.`));
 }
 
 export async function updateCashRegister(formData: FormData): Promise<void> {
   await requireAdmin();
   const id = text(formData, "id", 30);
   const current = await prisma.cashRegister.findUnique({ where: { id } });
-  if (!current) redirect(configUrl("error", "Caja no encontrada."));
+  if (!current) redirect(registerUrl("error", "Caja no encontrada."));
 
   const name = text(formData, "name", 191);
   const code = normalizeCode(text(formData, "code", 40));
   const warehouseId = text(formData, "warehouseId", 30);
   const active = formData.get("active") === "on";
-  if (name.length < 2 || code.length < 2 || !warehouseId) redirect(configUrl("error", "Datos de caja inválidos."));
+  if (name.length < 2 || code.length < 2 || !warehouseId) redirect(registerUrl("error", "Datos de caja inválidos."));
   const duplicate = await prisma.cashRegister.findUnique({ where: { code }, select: { id: true } });
-  if (duplicate && duplicate.id !== id) redirect(configUrl("error", `El código ${code} ya está en uso.`));
+  if (duplicate && duplicate.id !== id) redirect(registerUrl("error", `El código ${code} ya está en uso.`));
   const warehouse = await prisma.warehouse.findUnique({ where: { id: warehouseId } });
-  if (!warehouse?.active) redirect(configUrl("error", "La bodega seleccionada no está activa."));
+  if (!warehouse?.active) redirect(registerUrl("error", "La bodega seleccionada no está activa."));
   const openShift = await prisma.posShift.findFirst({ where: { registerId: id, status: PosShiftStatus.OPEN }, select: { id: true } });
   if (openShift && (!active || warehouseId !== current.warehouseId)) {
-    redirect(configUrl("error", "Cierra el turno abierto antes de desactivar la caja o cambiar su bodega."));
+    redirect(registerUrl("error", "Cierra el turno abierto antes de desactivar la caja o cambiar su bodega."));
   }
 
   await prisma.cashRegister.update({ where: { id }, data: { name, code, warehouseId, active } });
   refreshPos();
-  redirect(configUrl("ok", `Caja ${name} actualizada.`));
+  redirect(registerUrl("ok", `Caja ${name} actualizada.`));
 }
 
 export async function openPosShift(formData: FormData): Promise<void> {

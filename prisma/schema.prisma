@@ -69,6 +69,11 @@ enum PosCashMovementType {
   CASH_OUT
 }
 
+enum CustomerConsentKind {
+  PRIVACY_NOTICE
+  MARKETING
+}
+
 model Product {
   id                 String              @id @default(cuid()) @db.VarChar(30)
   slug               String              @unique @db.VarChar(191)
@@ -236,12 +241,51 @@ model PosCashMovement {
   @@index([shiftId, createdAt])
 }
 
+model Customer {
+  id                    String                 @id @default(cuid()) @db.VarChar(30)
+  rut                   String?                @unique @db.VarChar(20)
+  name                  String                 @db.VarChar(191)
+  email                 String?                @db.VarChar(191)
+  phone                 String?                @db.VarChar(40)
+  address               String?                @db.VarChar(255)
+  active                Boolean                @default(true)
+  privacyNoticeVersion  String                 @db.VarChar(40)
+  privacyAcknowledgedAt DateTime?              @db.DateTime(3)
+  privacySource         String?                @db.VarChar(80)
+  marketingConsent      Boolean                @default(false)
+  marketingConsentAt    DateTime?              @db.DateTime(3)
+  marketingConsentSource String?               @db.VarChar(80)
+  anonymizedAt          DateTime?              @db.DateTime(3)
+  createdAt             DateTime               @default(now()) @db.DateTime(3)
+  updatedAt             DateTime               @updatedAt @db.DateTime(3)
+  posSales              PosSale[]
+  consentEvents         CustomerConsentEvent[]
+
+  @@index([active, name])
+  @@index([email])
+  @@index([phone])
+}
+
+model CustomerConsentEvent {
+  id            String              @id @default(cuid()) @db.VarChar(30)
+  customerId    String              @db.VarChar(30)
+  kind          CustomerConsentKind
+  granted       Boolean
+  noticeVersion String?             @db.VarChar(40)
+  source        String              @db.VarChar(80)
+  createdAt     DateTime            @default(now()) @db.DateTime(3)
+  customer      Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, createdAt])
+}
+
 model PosSale {
   id             String           @id @default(cuid()) @db.VarChar(30)
   saleNumber     String           @unique @db.VarChar(40)
   warehouseId    String           @db.VarChar(30)
   shiftId        String?          @db.VarChar(30)
   cashierId      String?          @db.VarChar(30)
+  customerId     String?          @db.VarChar(30)
   customerName   String?          @db.VarChar(191)
   customerRut    String?          @db.VarChar(20)
   subtotal       Int
@@ -256,12 +300,14 @@ model PosSale {
   warehouse      Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
   shift          PosShift?        @relation(fields: [shiftId], references: [id], onDelete: SetNull)
   cashierUser    PosUser?         @relation("PosCashierSales", fields: [cashierId], references: [id], onDelete: SetNull)
+  customer       Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
   items          PosSaleItem[]
 
   @@index([createdAt])
   @@index([warehouseId, createdAt])
   @@index([shiftId, createdAt])
   @@index([cashierId, createdAt])
+  @@index([customerId, createdAt])
 }
 
 model PosSaleItem {

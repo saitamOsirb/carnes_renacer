@@ -16,7 +16,7 @@ export default async function ProtectedAdminLayout({ children }: { children: Rea
         </div>
         <nav>
           <Link href="/admin/pos">POS</Link>
-          <Link href="/admin/pos/reportes">Reportes POS</Link>
+          <Link href="/admin/clientes">Clientes</Link>
           <Link href="/admin/productos">Productos</Link>
           <Link href="/admin/inventario">Inventario</Link>
           <Link href="/admin/configuracion">WhatsApp de pagos</Link>

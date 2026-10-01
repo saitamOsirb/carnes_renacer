@@ -21,7 +21,7 @@ const paymentLabels: Record<PosPaymentMethod, string> = {
 
 export default async function AdminPosPage({ searchParams }: { searchParams: Promise<{ ok?: string; error?: string; sale?: string; shift?: string }> }) {
   const query = await searchParams;
-  const [registers, users, openShifts, recentSales] = await Promise.all([
+  const [registers, users, openShifts, recentSales, customers] = await Promise.all([
     prisma.cashRegister.findMany({
       where: { active: true, warehouse: { active: true } },
       include: { warehouse: true },
@@ -37,6 +37,12 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
       include: { warehouse: true, shift: { include: { register: true, user: true } }, _count: { select: { items: true } } },
       orderBy: { createdAt: "desc" },
       take: 20,
+    }),
+    prisma.customer.findMany({
+      where: { active: true, anonymizedAt: null, privacyAcknowledgedAt: { not: null } },
+      select: { id: true, name: true, rut: true, email: true, phone: true },
+      orderBy: { name: "asc" },
+      take: 1000,
     }),
   ]);
 
@@ -95,10 +101,12 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
         <div>
           <span className="admin-kicker">Venta presencial</span>
           <h1>Punto de venta</h1>
-          <p>Múltiples cajas y cajeros con apertura, cierre, arqueo y stock por bodega.</p>
+          <p>Múltiples cajas y cajeros con apertura, cierre, arqueo, clientes e inventario por bodega.</p>
         </div>
         <div className="pos-page-actions">
-          <Link className="admin-button admin-button-secondary" href="/admin/pos/configuracion">Usuarios y cajas</Link>
+          <Link className="admin-button admin-button-secondary" href="/admin/pos/cajas">Cajas</Link>
+          <Link className="admin-button admin-button-secondary" href="/admin/pos/configuracion">Usuarios POS</Link>
+          <Link className="admin-button admin-button-secondary" href="/admin/clientes">Clientes</Link>
           <Link className="admin-button admin-button-secondary" href="/admin/pos/reportes">Reportes</Link>
         </div>
       </div>
@@ -110,7 +118,7 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
       <section className="admin-card pos-shift-section">
         <div className="admin-card-heading"><div><h2>Abrir caja</h2><p>Un cajero y una caja solo pueden mantener un turno abierto simultáneamente.</p></div></div>
         {users.length === 0 || registers.length === 0 ? (
-          <div className="admin-inline-notice">Necesitas al menos un usuario POS y una caja activa. <Link href="/admin/pos/configuracion">Ir a configuración</Link>.</div>
+          <div className="admin-inline-notice">Necesitas al menos un usuario POS y una caja activa. <Link href={registers.length === 0 ? "/admin/pos/cajas" : "/admin/pos/configuracion"}>Completar configuración</Link>.</div>
         ) : (
           <form action={openPosShift} className="pos-open-shift-form">
             <label>Caja<select name="registerId" required defaultValue=""><option value="" disabled>Selecciona caja</option>{registers.map((register) => <option key={register.id} value={register.id} disabled={busyRegisterIds.has(register.id)}>{register.code} · {register.name} · {register.warehouse.name}{busyRegisterIds.has(register.id) ? " · EN USO" : ""}</option>)}</select></label>
@@ -153,6 +161,7 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
           cashierName={selectedShift.user.name}
           warehouseName={selectedShift.register.warehouse.name}
           products={products}
+          customers={customers}
         />
 
         <section className="admin-operation-grid pos-cash-controls">

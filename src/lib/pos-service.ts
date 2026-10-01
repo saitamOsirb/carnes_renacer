@@ -16,8 +16,7 @@ export type CreatePosSaleInput = {
   discount: number;
   paymentMethod: PosPaymentMethod;
   amountReceived?: number | null;
-  customerName?: string;
-  customerRut?: string;
+  customerId?: string;
   notes?: string;
 };
 
@@ -65,6 +64,16 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
     if (!shift || shift.status !== PosShiftStatus.OPEN) throw new PosSaleError("El turno de caja está cerrado o no existe.");
     if (!shift.register.active || !shift.register.warehouse.active) throw new PosSaleError("La caja o su bodega ya no están activas.");
     if (!shift.user.active) throw new PosSaleError("El cajero ya no está activo.");
+
+    const customer = input.customerId
+      ? await tx.customer.findUnique({ where: { id: input.customerId.slice(0, 30) } })
+      : null;
+    if (input.customerId && (!customer || !customer.active || customer.anonymizedAt)) {
+      throw new PosSaleError("El cliente seleccionado ya no está disponible para nuevas ventas.");
+    }
+    if (customer && !customer.privacyAcknowledgedAt) {
+      throw new PosSaleError("El cliente seleccionado no tiene registrado el aviso de privacidad vigente.");
+    }
 
     const warehouseId = shift.register.warehouseId;
     const warehouse = shift.register.warehouse;
@@ -134,8 +143,9 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
         warehouseId,
         shiftId: shift.id,
         cashierId: shift.user.id,
-        customerName: cleanOptional(input.customerName, 191),
-        customerRut: cleanOptional(input.customerRut, 20),
+        customerId: customer?.id ?? null,
+        customerName: customer?.name ?? null,
+        customerRut: customer?.rut ?? null,
         subtotal,
         discount: input.discount,
         total,
