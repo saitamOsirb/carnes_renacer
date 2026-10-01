@@ -87,9 +87,10 @@ function revalidateCatalog(slug?: string): void {
 }
 
 export async function loginAdmin(formData: FormData): Promise<void> {
+  const username = text(formData, "username", 80);
   const password = text(formData, "password", 500);
-  if (!password || !(await createAdminSession(password))) {
-    redirect(statusUrl("/admin/login", "error", "Contraseña incorrecta."));
+  if (!username || !password || !(await createAdminSession(username, password))) {
+    redirect(statusUrl("/admin/login", "error", "Usuario o contraseña incorrectos."));
   }
   redirect("/admin/productos");
 }

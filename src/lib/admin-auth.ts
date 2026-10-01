@@ -7,6 +7,14 @@ import { redirect } from "next/navigation";
 const ADMIN_COOKIE = "renacer_admin";
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
+function getAdminUsername(): string {
+  const value = process.env.ADMIN_USERNAME?.trim() || "admin";
+  if (value.length < 3 || value.length > 80) {
+    throw new Error("ADMIN_USERNAME debe configurarse con entre 3 y 80 caracteres.");
+  }
+  return value;
+}
+
 function getAdminPassword(): string {
   const value = process.env.ADMIN_PASSWORD;
   if (!value || value.length < 10) {
@@ -37,8 +45,8 @@ function sign(expiresAt: number): string {
     .digest("hex");
 }
 
-export async function createAdminSession(password: string): Promise<boolean> {
-  if (!safeEqual(password, getAdminPassword())) return false;
+export async function createAdminSession(username: string, password: string): Promise<boolean> {
+  if (!safeEqual(username, getAdminUsername()) || !safeEqual(password, getAdminPassword())) return false;
 
   const expiresAt = Date.now() + SESSION_TTL_MS;
   const token = `${expiresAt}.${sign(expiresAt)}`;

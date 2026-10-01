@@ -13,9 +13,10 @@ export default async function AdminLoginPage({ searchParams }: { searchParams: P
       <section className="admin-login-card">
         <span className="admin-kicker">Renacer Distribuidora</span>
         <h1>Administración</h1>
-        <p>Ingresa la contraseña administrativa para mantener productos y configuración comercial.</p>
+        <p>Ingresa tu usuario y contraseña administrativa para mantener productos y configuración comercial.</p>
         {error && <div className="admin-alert admin-alert-error">{error}</div>}
         <form action={loginAdmin} className="admin-form">
+          <label>Usuario<input type="text" name="username" required minLength={3} maxLength={80} autoComplete="username" /></label>
           <label>Contraseña<input type="password" name="password" required minLength={10} autoComplete="current-password" /></label>
           <button className="admin-button admin-button-primary" type="submit">Ingresar</button>
         </form>
