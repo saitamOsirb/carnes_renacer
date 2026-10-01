@@ -1,0 +1,196 @@
+"use client";
+
+import Image from "next/image";
+import { useMemo, useState } from "react";
+import { createPosSaleAction } from "@/app/admin/pos-actions";
+import { formatClp } from "@/lib/format";
+
+type PosProduct = {
+  id: string;
+  name: string;
+  category: string;
+  imageUrl: string;
+  price: number;
+  unit: "KG" | "UNIT";
+  available: number;
+};
+
+type PosWarehouse = {
+  id: string;
+  code: string;
+  name: string;
+  isDefault: boolean;
+  products: PosProduct[];
+};
+
+type CartLine = {
+  productId: string;
+  quantity: number;
+};
+
+function unitLabel(unit: PosProduct["unit"]): string {
+  return unit === "KG" ? "kg" : "un.";
+}
+
+export function PosTerminal({ warehouses }: { warehouses: PosWarehouse[] }) {
+  const initialWarehouse = warehouses.find((warehouse) => warehouse.isDefault) ?? warehouses[0];
+  const [warehouseId, setWarehouseId] = useState(initialWarehouse?.id ?? "");
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("ALL");
+  const [cart, setCart] = useState<CartLine[]>([]);
+  const [discount, setDiscount] = useState("0");
+  const [paymentMethod, setPaymentMethod] = useState("CASH");
+  const [amountReceived, setAmountReceived] = useState("");
+
+  const warehouse = warehouses.find((item) => item.id === warehouseId) ?? initialWarehouse;
+  const productMap = useMemo(() => new Map((warehouse?.products ?? []).map((product) => [product.id, product])), [warehouse]);
+  const categories = useMemo(() => [...new Set((warehouse?.products ?? []).map((product) => product.category))].sort((a, b) => a.localeCompare(b, "es")), [warehouse]);
+  const visibleProducts = useMemo(() => {
+    const term = search.trim().toLocaleLowerCase("es");
+    return (warehouse?.products ?? []).filter((product) => {
+      if (category !== "ALL" && product.category !== category) return false;
+      if (!term) return true;
+      return `${product.name} ${product.category}`.toLocaleLowerCase("es").includes(term);
+    });
+  }, [warehouse, search, category]);
+
+  const cartDetailed = cart.flatMap((line) => {
+    const product = productMap.get(line.productId);
+    return product ? [{ ...line, product }] : [];
+  });
+  const subtotal = cartDetailed.reduce((sum, line) => sum + line.product.price * line.quantity, 0);
+  const discountValue = Math.min(subtotal, Math.max(0, Number.parseInt(discount || "0", 10) || 0));
+  const total = subtotal - discountValue;
+  const received = Math.max(0, Number.parseInt(amountReceived || "0", 10) || 0);
+  const change = paymentMethod === "CASH" ? Math.max(0, received - total) : 0;
+  const cashInsufficient = paymentMethod === "CASH" && received < total;
+
+  function changeWarehouse(nextId: string) {
+    setWarehouseId(nextId);
+    setCart([]);
+    setCategory("ALL");
+    setSearch("");
+  }
+
+  function addProduct(product: PosProduct) {
+    if (product.available <= 0) return;
+    setCart((current) => {
+      const found = current.find((line) => line.productId === product.id);
+      if (!found) return [...current, { productId: product.id, quantity: 1 }];
+      if (found.quantity >= product.available) return current;
+      return current.map((line) => line.productId === product.id ? { ...line, quantity: line.quantity + 1 } : line);
+    });
+  }
+
+  function updateQuantity(product: PosProduct, quantity: number) {
+    if (quantity <= 0) {
+      setCart((current) => current.filter((line) => line.productId !== product.id));
+      return;
+    }
+    const safeQuantity = Math.min(product.available, Math.max(1, Math.trunc(quantity)));
+    setCart((current) => current.map((line) => line.productId === product.id ? { ...line, quantity: safeQuantity } : line));
+  }
+
+  if (!warehouse) {
+    return <div className="admin-alert admin-alert-error">No hay bodegas activas disponibles para operar el POS.</div>;
+  }
+
+  return (
+    <div className="pos-shell">
+      <section className="pos-catalog-panel">
+        <div className="pos-toolbar">
+          <label>
+            Bodega de venta
+            <select value={warehouseId} onChange={(event) => changeWarehouse(event.target.value)}>
+              {warehouses.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}{item.isDefault ? " · Principal" : ""}</option>)}
+            </select>
+          </label>
+          <label>
+            Buscar producto
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nombre o categoría" autoFocus />
+          </label>
+        </div>
+
+        <div className="pos-category-tabs">
+          <button type="button" className={category === "ALL" ? "is-active" : ""} onClick={() => setCategory("ALL")}>Todos</button>
+          {categories.map((item) => <button type="button" key={item} className={category === item ? "is-active" : ""} onClick={() => setCategory(item)}>{item}</button>)}
+        </div>
+
+        <div className="pos-product-grid">
+          {visibleProducts.length === 0 && <div className="pos-empty">No hay productos para este filtro.</div>}
+          {visibleProducts.map((product) => (
+            <button type="button" key={product.id} className="pos-product-card" disabled={product.available <= 0} onClick={() => addProduct(product)}>
+              <Image src={product.imageUrl} alt={product.name} width={150} height={112} sizes="150px" />
+              <span className="pos-product-info">
+                <strong>{product.name}</strong>
+                <small>{product.category}</small>
+                <span>{formatClp(product.price)} / {unitLabel(product.unit)}</span>
+                <em className={product.available <= 0 ? "is-empty" : ""}>{product.available > 0 ? `${product.available} ${unitLabel(product.unit)} disponibles` : "Sin stock"}</em>
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <form action={createPosSaleAction} className="pos-cart-panel">
+        <input type="hidden" name="warehouseId" value={warehouse.id} />
+        <input type="hidden" name="items" value={JSON.stringify(cart)} />
+        <input type="hidden" name="discount" value={discountValue} />
+
+        <div className="pos-cart-heading">
+          <div><span className="admin-kicker">Caja</span><h2>Venta actual</h2></div>
+          {cart.length > 0 && <button type="button" className="pos-clear-button" onClick={() => setCart([])}>Vaciar</button>}
+        </div>
+
+        <div className="pos-cart-lines">
+          {cartDetailed.length === 0 && <div className="pos-empty">Selecciona productos para comenzar la venta.</div>}
+          {cartDetailed.map((line) => (
+            <div className="pos-cart-line" key={line.productId}>
+              <div className="pos-cart-line-main">
+                <strong>{line.product.name}</strong>
+                <small>{formatClp(line.product.price)} × {line.quantity}</small>
+              </div>
+              <div className="pos-qty-control">
+                <button type="button" onClick={() => updateQuantity(line.product, line.quantity - 1)}>−</button>
+                <input type="number" min="1" max={line.product.available} value={line.quantity} onChange={(event) => updateQuantity(line.product, Number(event.target.value))} aria-label={`Cantidad de ${line.product.name}`} />
+                <button type="button" disabled={line.quantity >= line.product.available} onClick={() => updateQuantity(line.product, line.quantity + 1)}>+</button>
+              </div>
+              <strong>{formatClp(line.product.price * line.quantity)}</strong>
+            </div>
+          ))}
+        </div>
+
+        <div className="pos-customer-grid">
+          <label>Cliente <small>(opcional)</small><input name="customerName" maxLength={191} placeholder="Nombre del cliente" /></label>
+          <label>RUT <small>(opcional)</small><input name="customerRut" maxLength={20} placeholder="12.345.678-5" /></label>
+        </div>
+
+        <label className="pos-field">Observación <small>(opcional)</small><textarea name="notes" rows={2} maxLength={500} placeholder="Pedido, referencia, comentario de caja…" /></label>
+
+        <div className="pos-totals">
+          <div><span>Subtotal</span><strong>{formatClp(subtotal)}</strong></div>
+          <label><span>Descuento</span><input type="number" min="0" max={subtotal} step="1" value={discount} onChange={(event) => setDiscount(event.target.value)} /></label>
+          <div className="pos-total-final"><span>Total</span><strong>{formatClp(total)}</strong></div>
+        </div>
+
+        <div className="pos-payment-grid">
+          <label>Medio de pago
+            <select name="paymentMethod" value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}>
+              <option value="CASH">Efectivo</option>
+              <option value="DEBIT_CARD">Tarjeta débito</option>
+              <option value="CREDIT_CARD">Tarjeta crédito</option>
+              <option value="TRANSFER">Transferencia</option>
+              <option value="OTHER">Otro</option>
+            </select>
+          </label>
+          {paymentMethod === "CASH" && <label>Monto recibido<input name="amountReceived" type="number" min={total} step="1" value={amountReceived} onChange={(event) => setAmountReceived(event.target.value)} placeholder={String(total)} required /></label>}
+        </div>
+
+        {paymentMethod === "CASH" && <div className={`pos-change-box${cashInsufficient ? " is-warning" : ""}`}><span>Vuelto</span><strong>{formatClp(change)}</strong></div>}
+
+        <button className="admin-button admin-button-primary pos-pay-button" type="submit" disabled={cart.length === 0 || total <= 0 || cashInsufficient}>Registrar venta</button>
+        <small className="pos-sale-note">Al confirmar, el stock se descuenta inmediatamente de {warehouse.name} y queda registrado en el kardex.</small>
+      </form>
+    </div>
+  );
+}
