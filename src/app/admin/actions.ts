@@ -1,6 +1,6 @@
 "use server";
 
-import { UnitType } from "@prisma/client";
+import { InventoryMovementType, UnitType } from "@prisma/client";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { clearAdminSession, createAdminSession, requireAdmin } from "@/lib/admin-auth";
@@ -83,6 +83,7 @@ function revalidateCatalog(slug?: string): void {
   revalidatePath("/productos");
   revalidatePath("/carrito");
   revalidatePath("/checkout");
+  revalidatePath("/admin/inventario");
   if (slug) revalidatePath(`/productos/${slug}`);
 }
 
@@ -106,11 +107,11 @@ export async function createProduct(formData: FormData): Promise<void> {
   const description = text(formData, "description", 5000);
   const category = text(formData, "category", 100);
   const price = integer(formData, "price", 0);
-  const stock = integer(formData, "stock", 0, 1_000_000);
+  const initialStock = integer(formData, "stock", 0, 1_000_000);
   const unit = text(formData, "unit", 10) === "UNIT" ? UnitType.UNIT : UnitType.KG;
 
-  if (name.length < 2 || description.length < 3 || category.length < 2 || price === null || stock === null) {
-    redirect(statusUrl("/admin/productos", "error", "Completa correctamente nombre, descripción, categoría, precio y stock."));
+  if (name.length < 2 || description.length < 3 || category.length < 2 || price === null || initialStock === null) {
+    redirect(statusUrl("/admin/productos", "error", "Completa correctamente nombre, descripción, categoría, precio y stock inicial."));
   }
 
   let imageUrl: string | null = null;
@@ -121,21 +122,55 @@ export async function createProduct(formData: FormData): Promise<void> {
   }
   if (!imageUrl) redirect(statusUrl("/admin/productos", "error", "Debes subir una imagen para el producto."));
 
+  const defaultWarehouse = await prisma.warehouse.findFirst({
+    where: { active: true },
+    orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+  });
+  if (!defaultWarehouse) {
+    await cleanupImage(imageUrl);
+    redirect(statusUrl("/admin/productos", "error", "No existe una bodega activa para asignar el stock inicial."));
+  }
+
   const slug = await uniqueSlug(text(formData, "slug", 191) || name);
   try {
-    await prisma.product.create({
-      data: {
-        slug,
-        name,
-        description,
-        category,
-        imageUrl,
-        price,
-        stock,
-        unit,
-        active: formData.get("active") === "on",
-        featured: formData.get("featured") === "on",
-      },
+    await prisma.$transaction(async (tx) => {
+      const product = await tx.product.create({
+        data: {
+          slug,
+          name,
+          description,
+          category,
+          imageUrl,
+          price,
+          stock: initialStock,
+          unit,
+          active: formData.get("active") === "on",
+          featured: formData.get("featured") === "on",
+        },
+      });
+      await tx.inventoryStock.create({
+        data: {
+          warehouseId: defaultWarehouse.id,
+          productId: product.id,
+          onHand: initialStock,
+          reserved: 0,
+          minStock: 0,
+        },
+      });
+      if (initialStock > 0) {
+        await tx.inventoryMovement.create({
+          data: {
+            warehouseId: defaultWarehouse.id,
+            productId: product.id,
+            type: InventoryMovementType.OPENING,
+            quantity: initialStock,
+            onHandAfter: initialStock,
+            reservedAfter: 0,
+            note: "Stock inicial al crear producto",
+            reference: "product-create",
+          },
+        });
+      }
     });
   } catch (error) {
     await cleanupImage(imageUrl);
@@ -143,7 +178,7 @@ export async function createProduct(formData: FormData): Promise<void> {
   }
 
   revalidateCatalog(slug);
-  redirect(statusUrl("/admin/productos", "ok", "Producto creado correctamente."));
+  redirect(statusUrl("/admin/productos", "ok", "Producto creado correctamente. El stock inicial quedó asignado a la bodega principal."));
 }
 
 export async function updateProduct(formData: FormData): Promise<void> {
@@ -156,12 +191,8 @@ export async function updateProduct(formData: FormData): Promise<void> {
   const description = text(formData, "description", 5000);
   const category = text(formData, "category", 100);
   const price = integer(formData, "price", 0);
-  const stock = integer(formData, "stock", 0, 1_000_000);
-  if (name.length < 2 || description.length < 3 || category.length < 2 || price === null || stock === null) {
+  if (name.length < 2 || description.length < 3 || category.length < 2 || price === null) {
     redirect(statusUrl("/admin/productos", "error", "Los datos del producto son inválidos."));
-  }
-  if (stock < current.reserved) {
-    redirect(statusUrl("/admin/productos", "error", `El stock no puede ser menor que las ${current.reserved} unidades reservadas.`));
   }
 
   let replacement: string | null = null;
@@ -182,7 +213,6 @@ export async function updateProduct(formData: FormData): Promise<void> {
         description,
         category,
         price,
-        stock,
         unit: text(formData, "unit", 10) === "UNIT" ? UnitType.UNIT : UnitType.KG,
         active: formData.get("active") === "on",
         featured: formData.get("featured") === "on",
@@ -197,7 +227,7 @@ export async function updateProduct(formData: FormData): Promise<void> {
   if (replacement && current.imageUrl !== updated.imageUrl) await cleanupImage(current.imageUrl);
   revalidateCatalog(current.slug);
   if (updated.slug !== current.slug) revalidateCatalog(updated.slug);
-  redirect(statusUrl("/admin/productos", "ok", `Producto ${updated.name} actualizado.`));
+  redirect(statusUrl("/admin/productos", "ok", `Producto ${updated.name} actualizado. El stock se administra desde Inventario.`));
 }
 
 export async function deleteProduct(formData: FormData): Promise<void> {
@@ -211,7 +241,7 @@ export async function deleteProduct(formData: FormData): Promise<void> {
     data: { active: false, featured: false },
   });
   revalidateCatalog(product.slug);
-  redirect(statusUrl("/admin/productos", "ok", `Producto ${product.name} desactivado. Su historial se conserva.`));
+  redirect(statusUrl("/admin/productos", "ok", `Producto ${product.name} desactivado. Su historial e inventario se conservan.`));
 }
 
 export async function updateCheckoutWhatsapp(formData: FormData): Promise<void> {

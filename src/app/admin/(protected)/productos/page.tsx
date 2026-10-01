@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { createProduct, deleteProduct, updateProduct } from "@/app/admin/actions";
 
@@ -13,7 +14,7 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
   return (
     <div className="admin-content">
       <div className="admin-title-row">
-        <div><span className="admin-kicker">Catálogo</span><h1>Mantenedor de productos</h1><p>Los cambios se reflejan en la tienda pública y en el carrito.</p></div>
+        <div><span className="admin-kicker">Catálogo</span><h1>Mantenedor de productos</h1><p>Los cambios de producto se reflejan en la tienda. El stock se administra centralizadamente desde Inventario.</p></div>
         <div className="admin-stat"><strong>{products.length}</strong><span>productos</span></div>
       </div>
 
@@ -21,14 +22,14 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
       {query.error && <div className="admin-alert admin-alert-error">{query.error}</div>}
 
       <section className="admin-card admin-create-card">
-        <div className="admin-card-heading"><div><h2>Nuevo producto</h2><p>WebP, PNG o JPEG. Máximo 5 MB.</p></div></div>
+        <div className="admin-card-heading"><div><h2>Nuevo producto</h2><p>WebP, PNG o JPEG. Máximo 5 MB. El stock inicial se asigna a la bodega principal.</p></div></div>
         <form action={createProduct} className="admin-product-form">
           <div className="admin-grid admin-grid-3">
             <label>Nombre<input name="name" required minLength={2} maxLength={191} /></label>
             <label>Slug <small>(opcional)</small><input name="slug" maxLength={191} placeholder="se genera desde el nombre" /></label>
             <label>Categoría<input name="category" required maxLength={100} placeholder="Vacuno, Cerdo, Pollo…" /></label>
             <label>Precio CLP<input name="price" type="number" required min="0" step="1" /></label>
-            <label>Stock<input name="stock" type="number" required min="0" step="1" /></label>
+            <label>Stock inicial<input name="stock" type="number" required min="0" step="1" /><small>Se registrará como apertura de inventario.</small></label>
             <label>Unidad<select name="unit" defaultValue="KG"><option value="KG">Kilogramo (KG)</option><option value="UNIT">Unidad</option></select></label>
           </div>
           <label>Descripción<textarea name="description" required minLength={3} maxLength={5000} rows={3} /></label>
@@ -40,6 +41,8 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
           <button className="admin-button admin-button-primary" type="submit">Crear producto</button>
         </form>
       </section>
+
+      <div className="admin-inline-notice">El stock disponible y reservado es de solo lectura aquí. Usa <Link href="/admin/inventario">Inventario</Link> para entradas, salidas, ajustes, mínimos y transferencias entre bodegas.</div>
 
       <section className="admin-products-list">
         {products.map((product) => (
@@ -55,7 +58,7 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
                 <label>Slug<input name="slug" required defaultValue={product.slug} maxLength={191} /></label>
                 <label>Categoría<input name="category" required defaultValue={product.category} maxLength={100} /></label>
                 <label>Precio CLP<input name="price" type="number" required min="0" step="1" defaultValue={product.price} /></label>
-                <label>Stock<input name="stock" type="number" required min="0" step="1" defaultValue={product.stock} /></label>
+                <label>Stock disponible<input value={product.stock} readOnly aria-readonly="true" /><small>Gestionado por Inventario.</small></label>
                 <label>Unidad<select name="unit" defaultValue={product.unit}><option value="KG">Kilogramo (KG)</option><option value="UNIT">Unidad</option></select></label>
               </div>
               <label>Descripción<textarea name="description" required maxLength={5000} rows={3} defaultValue={product.description} /></label>

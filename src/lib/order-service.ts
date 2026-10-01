@@ -7,6 +7,11 @@ import { prisma } from "@/lib/prisma";
 import { calculateDiscount, calculateLineSubtotal, calculateShipping } from "@/lib/pricing";
 import { HttpError } from "@/lib/security";
 import { formatRut } from "@/lib/rut";
+import {
+  consumeItemInventoryReservation,
+  releaseItemInventoryReservation,
+  reserveProductInventory,
+} from "@/lib/inventory-service";
 
 const RESERVATION_MINUTES = 15;
 
@@ -44,23 +49,6 @@ export async function createPendingOrder(input: CheckoutInput, idempotencyKey: s
       };
     });
 
-    for (const line of lines) {
-      const reserved = await tx.product.updateMany({
-        where: {
-          id: line.product.id,
-          active: true,
-          stock: { gte: line.quantity },
-        },
-        data: {
-          stock: { decrement: line.quantity },
-          reserved: { increment: line.quantity },
-        },
-      });
-      if (reserved.count !== 1) {
-        throw new HttpError(409, `Stock insuficiente para ${line.product.name}.`, "INSUFFICIENT_STOCK");
-      }
-    }
-
     const subtotal = lines.reduce((sum, line) => sum + line.subtotal, 0);
     const couponCode = input.couponCode || undefined;
     const coupon = couponCode
@@ -76,7 +64,7 @@ export async function createPendingOrder(input: CheckoutInput, idempotencyKey: s
     }
 
     const reservationExpires = new Date(Date.now() + RESERVATION_MINUTES * 60_000);
-    return tx.order.create({
+    const order = await tx.order.create({
       data: {
         orderNumber: makeOrderNumber(),
         buyOrder: makeBuyOrder(),
@@ -110,7 +98,14 @@ export async function createPendingOrder(input: CheckoutInput, idempotencyKey: s
           })),
         },
       },
+      include: { items: true },
     });
+
+    for (const item of order.items) {
+      await reserveProductInventory(tx, item.productId, item.quantity, item.id, item.productName);
+    }
+
+    return order;
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
@@ -124,17 +119,14 @@ export async function releaseOrderReservation(
   paymentStatus: PaymentStatus = PaymentStatus.CANCELLED,
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
-    const order = await tx.order.findUnique({ where: { id: orderId }, include: { items: true } });
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: { items: { include: { inventoryReservations: true } } },
+    });
     if (!order || order.status !== OrderStatus.PENDING_PAYMENT) return;
 
     for (const item of order.items) {
-      await tx.product.update({
-        where: { id: item.productId },
-        data: {
-          stock: { increment: item.quantity },
-          reserved: { decrement: item.quantity },
-        },
-      });
+      await releaseItemInventoryReservation(tx, item);
     }
 
     await tx.order.update({ where: { id: order.id }, data: { status, paymentStatus } });
@@ -151,7 +143,10 @@ export type PaymentConfirmation = {
 
 export async function finalizePaidOrder(orderId: string, confirmation: PaymentConfirmation): Promise<Order> {
   return prisma.$transaction(async (tx) => {
-    const order = await tx.order.findUnique({ where: { id: orderId }, include: { items: true } });
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: { items: { include: { inventoryReservations: true } } },
+    });
     if (!order) throw new HttpError(404, "Orden no encontrada.", "ORDER_NOT_FOUND");
     if (order.status === OrderStatus.PAID) return order;
     if (order.status !== OrderStatus.PENDING_PAYMENT && order.status !== OrderStatus.PAYMENT_REVIEW) {
@@ -159,10 +154,7 @@ export async function finalizePaidOrder(orderId: string, confirmation: PaymentCo
     }
 
     for (const item of order.items) {
-      await tx.product.update({
-        where: { id: item.productId },
-        data: { reserved: { decrement: item.quantity } },
-      });
+      await consumeItemInventoryReservation(tx, item);
     }
 
     if (order.couponCode) {

@@ -1,11 +1,24 @@
-import { PrismaClient, UnitType } from "@prisma/client";
+import { InventoryMovementType, PrismaClient, UnitType } from "@prisma/client";
 import { catalogProducts } from "../src/data/catalog";
 
 const prisma = new PrismaClient();
+const DEFAULT_WAREHOUSE_ID = "warehouse-central";
 
 async function main() {
+  const warehouse = await prisma.warehouse.upsert({
+    where: { id: DEFAULT_WAREHOUSE_ID },
+    update: {},
+    create: {
+      id: DEFAULT_WAREHOUSE_ID,
+      code: "CENTRAL",
+      name: "Bodega principal",
+      active: true,
+      isDefault: true,
+    },
+  });
+
   for (const product of catalogProducts) {
-    await prisma.product.upsert({
+    const savedProduct = await prisma.product.upsert({
       where: { slug: product.slug },
       update: {},
       create: {
@@ -15,6 +28,40 @@ async function main() {
         active: true,
       },
     });
+
+    const existingStock = await prisma.inventoryStock.findUnique({
+      where: { warehouseId_productId: { warehouseId: warehouse.id, productId: savedProduct.id } },
+      select: { id: true },
+    });
+
+    if (!existingStock) {
+      const onHand = savedProduct.stock + savedProduct.reserved;
+      await prisma.$transaction(async (tx) => {
+        await tx.inventoryStock.create({
+          data: {
+            warehouseId: warehouse.id,
+            productId: savedProduct.id,
+            onHand,
+            reserved: savedProduct.reserved,
+            minStock: 0,
+          },
+        });
+        if (onHand > 0) {
+          await tx.inventoryMovement.create({
+            data: {
+              warehouseId: warehouse.id,
+              productId: savedProduct.id,
+              type: InventoryMovementType.OPENING,
+              quantity: onHand,
+              onHandAfter: onHand,
+              reservedAfter: savedProduct.reserved,
+              note: "Saldo inicial creado por seed",
+              reference: "seed",
+            },
+          });
+        }
+      });
+    }
   }
 
   await prisma.storeSetting.upsert({
@@ -35,7 +82,7 @@ async function main() {
     },
   });
 
-  console.log(`Seed verificado: ${catalogProducts.length} productos base sin sobrescribir cambios administrativos.`);
+  console.log(`Seed verificado: ${catalogProducts.length} productos base e inventario inicial sin sobrescribir cambios administrativos.`);
 }
 
 main()
