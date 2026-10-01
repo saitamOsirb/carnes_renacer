@@ -74,25 +74,40 @@ enum CustomerConsentKind {
   MARKETING
 }
 
+enum WarehouseVisualObjectType {
+  RACK
+  PALLET
+  COLD_ROOM
+  FREEZER
+  FRIDGE
+  TABLE
+  WALL
+  DOOR
+  RECEIVING
+  DISPATCH
+  CUSTOM
+}
+
 model Product {
-  id                 String              @id @default(cuid()) @db.VarChar(30)
-  slug               String              @unique @db.VarChar(191)
-  name               String              @db.VarChar(191)
-  description        String              @db.Text
-  category           String              @db.VarChar(100)
-  imageUrl           String              @db.VarChar(500)
-  price              Int
-  unit               UnitType            @default(KG)
-  stock              Int
-  reserved           Int                 @default(0)
-  active             Boolean             @default(true)
-  featured           Boolean             @default(false)
-  createdAt          DateTime            @default(now()) @db.DateTime(3)
-  updatedAt          DateTime            @updatedAt @db.DateTime(3)
-  orderItems         OrderItem[]
-  inventoryStocks    InventoryStock[]
-  inventoryMovements InventoryMovement[]
-  posSaleItems       PosSaleItem[]
+  id                  String                      @id @default(cuid()) @db.VarChar(30)
+  slug                String                      @unique @db.VarChar(191)
+  name                String                      @db.VarChar(191)
+  description         String                      @db.Text
+  category            String                      @db.VarChar(100)
+  imageUrl            String                      @db.VarChar(500)
+  price               Int
+  unit                UnitType                    @default(KG)
+  stock               Int
+  reserved            Int                         @default(0)
+  active              Boolean                     @default(true)
+  featured            Boolean                     @default(false)
+  createdAt           DateTime                    @default(now()) @db.DateTime(3)
+  updatedAt           DateTime                    @updatedAt @db.DateTime(3)
+  orderItems          OrderItem[]
+  inventoryStocks     InventoryStock[]
+  inventoryMovements  InventoryMovement[]
+  posSaleItems        PosSaleItem[]
+  warehousePlacements WarehouseProductPlacement[]
 
   @@index([active, category])
 }
@@ -112,21 +127,73 @@ model StoreSetting {
 }
 
 model Warehouse {
-  id            String                 @id @default(cuid()) @db.VarChar(30)
-  code          String                 @unique @db.VarChar(40)
-  name          String                 @db.VarChar(191)
-  address       String?                @db.VarChar(255)
-  active        Boolean                @default(true)
-  isDefault     Boolean                @default(false)
-  createdAt     DateTime               @default(now()) @db.DateTime(3)
-  updatedAt     DateTime               @updatedAt @db.DateTime(3)
-  stocks        InventoryStock[]
-  movements     InventoryMovement[]
-  reservations  InventoryReservation[]
-  posSales      PosSale[]
-  cashRegisters CashRegister[]
+  id                String                      @id @default(cuid()) @db.VarChar(30)
+  code              String                      @unique @db.VarChar(40)
+  name              String                      @db.VarChar(191)
+  address           String?                     @db.VarChar(255)
+  active            Boolean                     @default(true)
+  isDefault         Boolean                     @default(false)
+  createdAt         DateTime                    @default(now()) @db.DateTime(3)
+  updatedAt         DateTime                    @updatedAt @db.DateTime(3)
+  stocks            InventoryStock[]
+  movements         InventoryMovement[]
+  reservations      InventoryReservation[]
+  posSales          PosSale[]
+  cashRegisters     CashRegister[]
+  layout            WarehouseLayout?
+  productPlacements WarehouseProductPlacement[]
 
   @@index([active, name])
+}
+
+model WarehouseLayout {
+  id          String                  @id @default(cuid()) @db.VarChar(30)
+  warehouseId String                  @unique @db.VarChar(30)
+  widthCm     Int
+  depthCm     Int
+  heightCm    Int
+  createdAt   DateTime                @default(now()) @db.DateTime(3)
+  updatedAt   DateTime                @updatedAt @db.DateTime(3)
+  warehouse   Warehouse               @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  objects     WarehouseVisualObject[]
+
+  @@index([warehouseId])
+}
+
+model WarehouseVisualObject {
+  id         String                    @id @default(cuid()) @db.VarChar(30)
+  layoutId   String                    @db.VarChar(30)
+  type       WarehouseVisualObjectType
+  label      String                    @db.VarChar(120)
+  xCm        Int
+  zCm        Int
+  widthCm    Int
+  depthCm    Int
+  heightCm   Int
+  rotation   Int                       @default(0)
+  createdAt  DateTime                  @default(now()) @db.DateTime(3)
+  updatedAt  DateTime                  @updatedAt @db.DateTime(3)
+  layout     WarehouseLayout           @relation(fields: [layoutId], references: [id], onDelete: Cascade)
+  placements WarehouseProductPlacement[]
+
+  @@index([layoutId])
+}
+
+model WarehouseProductPlacement {
+  id           String                @id @default(cuid()) @db.VarChar(30)
+  warehouseId  String                @db.VarChar(30)
+  objectId     String                @db.VarChar(30)
+  productId    String                @db.VarChar(30)
+  locationCode String?               @db.VarChar(80)
+  createdAt    DateTime              @default(now()) @db.DateTime(3)
+  updatedAt    DateTime              @updatedAt @db.DateTime(3)
+  warehouse    Warehouse             @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  object       WarehouseVisualObject @relation(fields: [objectId], references: [id], onDelete: Cascade)
+  product      Product               @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([warehouseId, productId])
+  @@index([objectId])
+  @@index([productId])
 }
 
 model InventoryStock {
@@ -242,24 +309,24 @@ model PosCashMovement {
 }
 
 model Customer {
-  id                    String                 @id @default(cuid()) @db.VarChar(30)
-  rut                   String?                @unique @db.VarChar(20)
-  name                  String                 @db.VarChar(191)
-  email                 String?                @db.VarChar(191)
-  phone                 String?                @db.VarChar(40)
-  address               String?                @db.VarChar(255)
-  active                Boolean                @default(true)
-  privacyNoticeVersion  String                 @db.VarChar(40)
-  privacyAcknowledgedAt DateTime?              @db.DateTime(3)
-  privacySource         String?                @db.VarChar(80)
-  marketingConsent      Boolean                @default(false)
-  marketingConsentAt    DateTime?              @db.DateTime(3)
-  marketingConsentSource String?               @db.VarChar(80)
-  anonymizedAt          DateTime?              @db.DateTime(3)
-  createdAt             DateTime               @default(now()) @db.DateTime(3)
-  updatedAt             DateTime               @updatedAt @db.DateTime(3)
-  posSales              PosSale[]
-  consentEvents         CustomerConsentEvent[]
+  id                     String                 @id @default(cuid()) @db.VarChar(30)
+  rut                    String?                @unique @db.VarChar(20)
+  name                   String                 @db.VarChar(191)
+  email                  String?                @db.VarChar(191)
+  phone                  String?                @db.VarChar(40)
+  address                String?                @db.VarChar(255)
+  active                 Boolean                @default(true)
+  privacyNoticeVersion   String                 @db.VarChar(40)
+  privacyAcknowledgedAt  DateTime?              @db.DateTime(3)
+  privacySource          String?                @db.VarChar(80)
+  marketingConsent       Boolean                @default(false)
+  marketingConsentAt     DateTime?              @db.DateTime(3)
+  marketingConsentSource String?                @db.VarChar(80)
+  anonymizedAt           DateTime?              @db.DateTime(3)
+  createdAt              DateTime               @default(now()) @db.DateTime(3)
+  updatedAt              DateTime               @updatedAt @db.DateTime(3)
+  posSales               PosSale[]
+  consentEvents          CustomerConsentEvent[]
 
   @@index([active, name])
   @@index([email])
