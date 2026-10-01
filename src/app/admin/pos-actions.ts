@@ -19,9 +19,10 @@ function integer(formData: FormData, key: string, min = 0, max = 999_999_999): n
   return value;
 }
 
-function statusUrl(type: "ok" | "error", message: string, saleId?: string): string {
+function statusUrl(type: "ok" | "error", message: string, saleId?: string, shiftId?: string): string {
   const params = new URLSearchParams({ [type]: message });
   if (saleId) params.set("sale", saleId);
+  if (shiftId) params.set("shift", shiftId);
   return `/admin/pos?${params.toString()}`;
 }
 
@@ -44,7 +45,7 @@ function parseItems(raw: string): PosSaleLineInput[] {
 export async function createPosSaleAction(formData: FormData): Promise<void> {
   await requireAdmin();
 
-  const warehouseId = text(formData, "warehouseId", 30);
+  const shiftId = text(formData, "shiftId", 30);
   const items = parseItems(text(formData, "items", 20_000));
   const discount = integer(formData, "discount", 0) ?? 0;
   const paymentRaw = text(formData, "paymentMethod", 30);
@@ -52,7 +53,8 @@ export async function createPosSaleAction(formData: FormData): Promise<void> {
     ? (paymentRaw as PosPaymentMethod)
     : null;
 
-  if (!paymentMethod) redirect(statusUrl("error", "Selecciona un medio de pago válido."));
+  if (!shiftId) redirect(statusUrl("error", "Selecciona o abre un turno de caja antes de vender."));
+  if (!paymentMethod) redirect(statusUrl("error", "Selecciona un medio de pago válido.", undefined, shiftId));
 
   const amountReceived = paymentMethod === PosPaymentMethod.CASH
     ? integer(formData, "amountReceived", 0)
@@ -61,7 +63,7 @@ export async function createPosSaleAction(formData: FormData): Promise<void> {
   let sale;
   try {
     sale = await createPosSale({
-      warehouseId,
+      shiftId,
       items,
       discount,
       paymentMethod,
@@ -71,7 +73,7 @@ export async function createPosSaleAction(formData: FormData): Promise<void> {
       notes: text(formData, "notes", 500),
     });
   } catch (error) {
-    if (error instanceof PosSaleError) redirect(statusUrl("error", error.message));
+    if (error instanceof PosSaleError) redirect(statusUrl("error", error.message, undefined, shiftId));
     throw error;
   }
 
@@ -82,5 +84,6 @@ export async function createPosSaleAction(formData: FormData): Promise<void> {
   revalidatePath("/admin/productos");
   revalidatePath("/admin/inventario");
   revalidatePath("/admin/pos");
-  redirect(statusUrl("ok", `Venta ${sale.saleNumber} registrada correctamente.`, sale.id));
+  revalidatePath("/admin/pos/reportes");
+  redirect(statusUrl("ok", `Venta ${sale.saleNumber} registrada correctamente.`, sale.id, shiftId));
 }
