@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { InventoryMovementType, PosPaymentMethod, Prisma, type PosSale } from "@prisma/client";
+import { InventoryMovementType, PosPaymentMethod, PosShiftStatus, Prisma, type PosSale } from "@prisma/client";
 import { syncProductInventory } from "@/lib/inventory-service";
 import { prisma } from "@/lib/prisma";
 
@@ -11,7 +11,7 @@ export type PosSaleLineInput = {
 };
 
 export type CreatePosSaleInput = {
-  warehouseId: string;
+  shiftId: string;
   items: PosSaleLineInput[];
   discount: number;
   paymentMethod: PosPaymentMethod;
@@ -34,17 +34,13 @@ function saleNumber(): string {
   return `POS-${date}-${randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
 }
 
-function cashierName(): string {
-  return (process.env.ADMIN_USERNAME?.trim() || "admin").slice(0, 80);
-}
-
 function cleanOptional(value: string | undefined, max: number): string | null {
   const normalized = value?.trim().slice(0, max) ?? "";
   return normalized || null;
 }
 
 export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale> {
-  if (!input.warehouseId) throw new PosSaleError("Selecciona una bodega para la venta.");
+  if (!input.shiftId) throw new PosSaleError("Debes operar sobre un turno de caja abierto.");
   if (!Array.isArray(input.items) || input.items.length === 0) throw new PosSaleError("Agrega al menos un producto al carrito.");
   if (input.items.length > 100) throw new PosSaleError("La venta supera el máximo de 100 líneas.");
 
@@ -59,23 +55,26 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
 
   const productIds = normalizedItems.map((item) => item.productId);
   if (new Set(productIds).size !== productIds.length) throw new PosSaleError("El carrito contiene productos repetidos.");
-  if (!Number.isInteger(input.discount) || input.discount < 0 || input.discount > 999_999_999) {
-    throw new PosSaleError("El descuento es inválido.");
-  }
+  if (!Number.isInteger(input.discount) || input.discount < 0 || input.discount > 999_999_999) throw new PosSaleError("El descuento es inválido.");
 
   return prisma.$transaction(async (tx) => {
-    const warehouse = await tx.warehouse.findUnique({ where: { id: input.warehouseId } });
-    if (!warehouse?.active) throw new PosSaleError("La bodega seleccionada no está activa.");
+    const shift = await tx.posShift.findUnique({
+      where: { id: input.shiftId },
+      include: { register: { include: { warehouse: true } }, user: true },
+    });
+    if (!shift || shift.status !== PosShiftStatus.OPEN) throw new PosSaleError("El turno de caja está cerrado o no existe.");
+    if (!shift.register.active || !shift.register.warehouse.active) throw new PosSaleError("La caja o su bodega ya no están activas.");
+    if (!shift.user.active) throw new PosSaleError("El cajero ya no está activo.");
 
+    const warehouseId = shift.register.warehouseId;
+    const warehouse = shift.register.warehouse;
     const products = await tx.product.findMany({
       where: { id: { in: productIds }, active: true },
       select: { id: true, name: true, unit: true, price: true },
     });
     if (products.length !== productIds.length) throw new PosSaleError("Uno o más productos ya no están disponibles.");
 
-    const stocks = await tx.inventoryStock.findMany({
-      where: { warehouseId: input.warehouseId, productId: { in: productIds } },
-    });
+    const stocks = await tx.inventoryStock.findMany({ where: { warehouseId, productId: { in: productIds } } });
     const productMap = new Map(products.map((product) => [product.id, product]));
     const stockMap = new Map(stocks.map((stock) => [stock.productId, stock]));
 
@@ -84,9 +83,7 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
       if (!product) throw new PosSaleError("Producto inválido en el carrito.");
       const stock = stockMap.get(item.productId);
       const available = stock ? Math.max(0, stock.onHand - stock.reserved) : 0;
-      if (!stock || available < item.quantity) {
-        throw new PosSaleError(`Stock insuficiente de ${product.name} en ${warehouse.name}. Disponible: ${available}.`);
-      }
+      if (!stock || available < item.quantity) throw new PosSaleError(`Stock insuficiente de ${product.name} en ${warehouse.name}. Disponible: ${available}.`);
       const lineSubtotal = product.price * item.quantity;
       if (!Number.isSafeInteger(lineSubtotal) || lineSubtotal < 0) throw new PosSaleError(`Subtotal inválido para ${product.name}.`);
       return { product, stock, quantity: item.quantity, subtotal: lineSubtotal };
@@ -99,7 +96,6 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
     const total = subtotal - input.discount;
     let amountReceived: number | null = null;
     let changeDue = 0;
-
     if (input.paymentMethod === PosPaymentMethod.CASH) {
       const received = Number(input.amountReceived);
       if (!Number.isInteger(received) || received < total || received > 999_999_999) {
@@ -110,29 +106,22 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
     }
 
     const number = saleNumber();
-
     for (const line of lines) {
       const updated = await tx.inventoryStock.updateMany({
-        where: {
-          id: line.stock.id,
-          onHand: line.stock.onHand,
-          reserved: line.stock.reserved,
-        },
+        where: { id: line.stock.id, onHand: line.stock.onHand, reserved: line.stock.reserved },
         data: { onHand: { decrement: line.quantity } },
       });
-      if (updated.count !== 1) {
-        throw new PosSaleError("El inventario cambió mientras se registraba la venta. Vuelve a intentarlo.");
-      }
+      if (updated.count !== 1) throw new PosSaleError("El inventario cambió mientras se registraba la venta. Vuelve a intentarlo.");
 
       await tx.inventoryMovement.create({
         data: {
-          warehouseId: input.warehouseId,
+          warehouseId,
           productId: line.product.id,
           type: InventoryMovementType.SALE,
           quantity: -line.quantity,
           onHandAfter: line.stock.onHand - line.quantity,
           reservedAfter: line.stock.reserved,
-          note: `Venta POS ${number}`,
+          note: `Venta POS ${number} · ${shift.register.name} · ${shift.user.name}`,
           reference: number,
         },
       });
@@ -142,7 +131,9 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
     return tx.posSale.create({
       data: {
         saleNumber: number,
-        warehouseId: input.warehouseId,
+        warehouseId,
+        shiftId: shift.id,
+        cashierId: shift.user.id,
         customerName: cleanOptional(input.customerName, 191),
         customerRut: cleanOptional(input.customerRut, 20),
         subtotal,
@@ -152,7 +143,7 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
         amountReceived,
         changeDue,
         notes: cleanOptional(input.notes, 500),
-        cashier: cashierName(),
+        cashier: shift.user.name.slice(0, 80),
         items: {
           create: lines.map((line) => ({
             productId: line.product.id,
