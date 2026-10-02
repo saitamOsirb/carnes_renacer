@@ -7,6 +7,7 @@ import { redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/admin-auth";
 import { syncProductInventory } from "@/lib/inventory-service";
 import { prisma } from "@/lib/prisma";
+import { isValidQuantityForUnit, roundQuantity, toQuantityNumber } from "@/lib/quantity";
 import { reconcileWarehouseLocationStock } from "@/lib/warehouse-location-service";
 
 function text(formData: FormData, key: string, max = 500): string {
@@ -14,12 +15,13 @@ function text(formData: FormData, key: string, max = 500): string {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
-function integer(formData: FormData, key: string, min = 0, max = 100_000_000): number | null {
-  const raw = text(formData, key, 30);
+function decimalQuantity(formData: FormData, key: string, min = 0, max = 10_000_000): number | null {
+  const raw = text(formData, key, 30).replace(",", ".");
   if (!raw) return null;
   const value = Number(raw);
-  if (!Number.isInteger(value) || value < min || value > max) return null;
-  return value;
+  const rounded = roundQuantity(value);
+  if (!Number.isFinite(value) || Math.abs(value - rounded) > 1e-9 || rounded < min || rounded > max) return null;
+  return rounded;
 }
 
 function normalizeCode(value: string): string {
@@ -114,7 +116,7 @@ export async function applyStockMovement(formData: FormData): Promise<void> {
   const warehouseId = text(formData, "warehouseId", 30);
   const productId = text(formData, "productId", 30);
   const mode = text(formData, "mode", 20);
-  const quantity = integer(formData, "quantity", 0, 10_000_000);
+  const quantity = decimalQuantity(formData, "quantity", 0);
   const note = text(formData, "note", 500);
 
   if (!warehouseId || !productId || quantity === null || !["RECEIVE", "ISSUE", "SET"].includes(mode)) {
@@ -128,6 +130,9 @@ export async function applyStockMovement(formData: FormData): Promise<void> {
   ]);
   if (!warehouse?.active) redirect(statusUrl("error", "La bodega seleccionada no está activa."));
   if (!product) redirect(statusUrl("error", "Producto no encontrado."));
+  if (!isValidQuantityForUnit(quantity, product.unit, { allowZero: mode === "SET", max: 10_000_000 })) {
+    redirect(statusUrl("error", product.unit === "KG" ? "El peso admite hasta tres decimales." : "Los productos por unidad requieren una cantidad entera."));
+  }
 
   const reference = `ADM-${randomUUID().slice(0, 12)}`;
   try {
@@ -138,23 +143,25 @@ export async function applyStockMovement(formData: FormData): Promise<void> {
         create: { warehouseId, productId, onHand: 0, reserved: 0, minStock: 0 },
       });
 
-      let newOnHand = stock.onHand;
+      const currentOnHand = toQuantityNumber(stock.onHand);
+      const currentReserved = toQuantityNumber(stock.reserved);
+      let newOnHand = currentOnHand;
       let delta = 0;
       let type: InventoryMovementType;
 
       if (mode === "RECEIVE") {
-        newOnHand = stock.onHand + quantity;
+        newOnHand = roundQuantity(currentOnHand + quantity);
         delta = quantity;
         type = InventoryMovementType.RECEIVE;
       } else if (mode === "ISSUE") {
-        if (stock.onHand - stock.reserved < quantity) throw new Error("STOCK_NOT_AVAILABLE");
-        newOnHand = stock.onHand - quantity;
+        if (roundQuantity(currentOnHand - currentReserved) < quantity) throw new Error("STOCK_NOT_AVAILABLE");
+        newOnHand = roundQuantity(currentOnHand - quantity);
         delta = -quantity;
         type = InventoryMovementType.ISSUE;
       } else {
-        if (quantity < stock.reserved) throw new Error("BELOW_RESERVED");
+        if (quantity < currentReserved) throw new Error("BELOW_RESERVED");
         newOnHand = quantity;
-        delta = quantity - stock.onHand;
+        delta = roundQuantity(quantity - currentOnHand);
         type = InventoryMovementType.ADJUSTMENT;
       }
 
@@ -167,7 +174,7 @@ export async function applyStockMovement(formData: FormData): Promise<void> {
             type,
             quantity: delta,
             onHandAfter: newOnHand,
-            reservedAfter: stock.reserved,
+            reservedAfter: currentReserved,
             note: note || null,
             reference,
           },
@@ -195,7 +202,7 @@ export async function transferStock(formData: FormData): Promise<void> {
   const sourceWarehouseId = text(formData, "sourceWarehouseId", 30);
   const targetWarehouseId = text(formData, "targetWarehouseId", 30);
   const productId = text(formData, "productId", 30);
-  const quantity = integer(formData, "quantity", 1, 10_000_000);
+  const quantity = decimalQuantity(formData, "quantity", 0.001);
   const note = text(formData, "note", 500);
 
   if (!sourceWarehouseId || !targetWarehouseId || sourceWarehouseId === targetWarehouseId || !productId || quantity === null) {
@@ -211,19 +218,25 @@ export async function transferStock(formData: FormData): Promise<void> {
         tx.product.findUnique({ where: { id: productId } }),
       ]);
       if (!sourceWarehouse?.active || !targetWarehouse?.active || !product) throw new Error("INVALID_TRANSFER_TARGET");
+      if (!isValidQuantityForUnit(quantity, product.unit, { max: 10_000_000 })) throw new Error("INVALID_QUANTITY");
 
       const source = await tx.inventoryStock.findUnique({
         where: { warehouseId_productId: { warehouseId: sourceWarehouseId, productId } },
       });
-      if (!source || source.onHand - source.reserved < quantity) throw new Error("STOCK_NOT_AVAILABLE");
+      const sourceOnHand = source ? toQuantityNumber(source.onHand) : 0;
+      const sourceReserved = source ? toQuantityNumber(source.reserved) : 0;
+      if (!source || roundQuantity(sourceOnHand - sourceReserved) < quantity) throw new Error("STOCK_NOT_AVAILABLE");
 
       const target = await tx.inventoryStock.upsert({
         where: { warehouseId_productId: { warehouseId: targetWarehouseId, productId } },
         update: {},
         create: { warehouseId: targetWarehouseId, productId, onHand: 0, reserved: 0, minStock: 0 },
       });
+      const targetOnHand = toQuantityNumber(target.onHand);
+      const targetReserved = toQuantityNumber(target.reserved);
 
-      const sourceOnHandAfter = source.onHand - quantity;
+      const sourceOnHandAfter = roundQuantity(sourceOnHand - quantity);
+      const targetOnHandAfter = roundQuantity(targetOnHand + quantity);
       await tx.inventoryStock.update({ where: { id: source.id }, data: { onHand: { decrement: quantity } } });
       await tx.inventoryStock.update({ where: { id: target.id }, data: { onHand: { increment: quantity } } });
       await tx.inventoryMovement.createMany({
@@ -234,7 +247,7 @@ export async function transferStock(formData: FormData): Promise<void> {
             type: InventoryMovementType.TRANSFER_OUT,
             quantity: -quantity,
             onHandAfter: sourceOnHandAfter,
-            reservedAfter: source.reserved,
+            reservedAfter: sourceReserved,
             note: note || `Transferencia hacia ${targetWarehouse.name}`,
             reference,
           },
@@ -243,8 +256,8 @@ export async function transferStock(formData: FormData): Promise<void> {
             productId,
             type: InventoryMovementType.TRANSFER_IN,
             quantity,
-            onHandAfter: target.onHand + quantity,
-            reservedAfter: target.reserved,
+            onHandAfter: targetOnHandAfter,
+            reservedAfter: targetReserved,
             note: note || `Transferencia desde ${sourceWarehouse.name}`,
             reference,
           },
@@ -260,6 +273,7 @@ export async function transferStock(formData: FormData): Promise<void> {
   } catch (error) {
     if (error instanceof Error && error.message === "STOCK_NOT_AVAILABLE") redirect(statusUrl("error", "La bodega origen no tiene stock disponible suficiente."));
     if (error instanceof Error && error.message === "INVALID_TRANSFER_TARGET") redirect(statusUrl("error", "Producto o bodega inválidos para la transferencia."));
+    if (error instanceof Error && error.message === "INVALID_QUANTITY") redirect(statusUrl("error", "Cantidad inválida para la unidad de medida del producto."));
     throw error;
   }
 
@@ -271,8 +285,13 @@ export async function updateMinimumStock(formData: FormData): Promise<void> {
   await requireAdmin();
   const warehouseId = text(formData, "warehouseId", 30);
   const productId = text(formData, "productId", 30);
-  const minStock = integer(formData, "minStock", 0, 10_000_000);
+  const minStock = decimalQuantity(formData, "minStock", 0);
   if (!warehouseId || !productId || minStock === null) redirect(statusUrl("error", "Stock mínimo inválido."));
+
+  const product = await prisma.product.findUnique({ where: { id: productId }, select: { unit: true } });
+  if (!product || !isValidQuantityForUnit(minStock, product.unit, { allowZero: true, max: 10_000_000 })) {
+    redirect(statusUrl("error", "Stock mínimo inválido para la unidad de medida del producto."));
+  }
 
   await prisma.inventoryStock.upsert({
     where: { warehouseId_productId: { warehouseId, productId } },
