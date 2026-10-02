@@ -1,10 +1,12 @@
 "use server";
 
-import { PosPaymentMethod } from "@prisma/client";
+import { DteDocumentType, PosPaymentMethod } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/admin-auth";
 import { createPosSale, PosSaleError, type PosSaleLineInput } from "@/lib/pos-service";
+import { issuePosSaleDte } from "@/lib/sii/billing-service";
+import { getSiiConfig } from "@/lib/sii/config";
 
 function text(formData: FormData, key: string, max = 500): string {
   const value = formData.get(key);
@@ -76,6 +78,21 @@ export async function createPosSaleAction(formData: FormData): Promise<void> {
     throw error;
   }
 
+  let message = `Venta ${sale.saleNumber} registrada correctamente.`;
+  const sii = getSiiConfig();
+  if (sii.autoIssueBoleta) {
+    try {
+      const dte = await issuePosSaleDte({
+        saleId: sale.id,
+        type: DteDocumentType.BOLETA_ELECTRONICA,
+      });
+      message += ` Boleta electrónica folio ${dte.folio}: ${dte.status}.`;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "error desconocido";
+      message += ` La boleta automática quedó pendiente: ${detail}`;
+    }
+  }
+
   revalidatePath("/");
   revalidatePath("/productos");
   revalidatePath("/carrito");
@@ -85,5 +102,7 @@ export async function createPosSaleAction(formData: FormData): Promise<void> {
   revalidatePath("/admin/pos");
   revalidatePath("/admin/pos/reportes");
   revalidatePath("/admin/clientes");
-  redirect(statusUrl("ok", `Venta ${sale.saleNumber} registrada correctamente.`, sale.id, shiftId));
+  revalidatePath("/admin/facturacion");
+  revalidatePath(`/admin/pos/ventas/${sale.id}`);
+  redirect(statusUrl("ok", message, sale.id, shiftId));
 }
