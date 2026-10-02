@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { Coupon, Product } from "@prisma/client";
+import { calculateQuantitySubtotal, isValidQuantityForUnit, roundQuantity } from "@/lib/quantity";
 import { HttpError } from "@/lib/security";
 import { FREE_SHIPPING_THRESHOLD, STANDARD_SHIPPING } from "@/lib/pricing-config";
 
@@ -29,9 +30,20 @@ export function calculateDiscount(subtotal: number, coupon: Coupon | null): numb
   return Math.min(subtotal, Math.max(percent, fixed));
 }
 
-export function calculateLineSubtotal(product: Pick<Product, "price">, quantity: number): number {
-  if (!Number.isInteger(quantity) || quantity < 1) {
-    throw new HttpError(422, "Cantidad de producto inválida.", "INVALID_QUANTITY");
+export function calculateLineSubtotal(product: Pick<Product, "price" | "unit">, quantity: number): number {
+  const normalized = roundQuantity(quantity);
+  if (!isValidQuantityForUnit(normalized, product.unit)) {
+    throw new HttpError(
+      422,
+      product.unit === "KG"
+        ? "Cantidad inválida. Los productos por kilo admiten hasta tres decimales."
+        : "Cantidad inválida. Los productos por unidad solo admiten enteros.",
+      "INVALID_QUANTITY",
+    );
   }
-  return product.price * quantity;
+  const subtotal = calculateQuantitySubtotal(product.price, normalized);
+  if (!Number.isSafeInteger(subtotal) || subtotal <= 0) {
+    throw new HttpError(422, "Subtotal de producto inválido.", "INVALID_LINE_SUBTOTAL");
+  }
+  return subtotal;
 }
