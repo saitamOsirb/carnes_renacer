@@ -28,6 +28,7 @@ export default async function DteDetailPage({ params }: { params: Promise<{ id: 
     where: { id },
     include: {
       sale: { include: { items: { orderBy: { productName: "asc" } }, shift: { include: { register: true, user: true } } } },
+      posReturn: { include: { items: { orderBy: { productName: "asc" } } } },
       events: { orderBy: { createdAt: "desc" } },
       parent: true,
       references: true,
@@ -36,12 +37,14 @@ export default async function DteDetailPage({ params }: { params: Promise<{ id: 
   if (!document) notFound();
 
   const retryable = document.status === DteStatus.ERROR || document.status === DteStatus.GENERATED || document.status === DteStatus.QUEUED;
+  const returnDocument = document.posReturn;
 
   return (
     <div className="admin-content admin-content-narrow billing-detail-page">
       <div className="billing-detail-actions no-print">
         <Link href="/admin/facturacion" className="admin-button admin-button-secondary">← Facturación</Link>
         <div>
+          {document.saleId && <Link href={`/admin/pos/ventas/${document.saleId}`} className="admin-button admin-button-secondary">Ver venta</Link>}
           {document.trackId && <form action={syncDteStatusAction}><input type="hidden" name="documentId" value={document.id} /><button className="admin-button admin-button-secondary" type="submit">Consultar estado SII</button></form>}
           {retryable && <form action={retryDteAction}><input type="hidden" name="documentId" value={document.id} /><button className="admin-button admin-button-secondary" type="submit">Reenviar</button></form>}
           <PrintButton />
@@ -57,6 +60,8 @@ export default async function DteDetailPage({ params }: { params: Promise<{ id: 
         <section className="billing-document-meta">
           <div><span>Fecha emisión</span><strong>{document.issueDate.toLocaleString("es-CL")}</strong></div>
           <div><span>Venta origen</span><strong>{document.sale?.saleNumber ?? "Sin venta asociada"}</strong></div>
+          {returnDocument && <div><span>Devolución</span><strong>{returnDocument.returnNumber}</strong></div>}
+          {document.parent && <div><span>DTE referenciado</span><strong>Tipo {document.parent.typeCode} · Folio {document.parent.folio}</strong></div>}
           <div><span>Track ID</span><strong>{document.trackId ?? "Pendiente"}</strong></div>
           <div><span>Código SII/proveedor</span><strong>{document.siiStatusCode ?? "—"}</strong></div>
         </section>
@@ -68,7 +73,15 @@ export default async function DteDetailPage({ params }: { params: Promise<{ id: 
           </div> : <p>Consumidor final / receptor no individualizado.</p>}
         </section>
 
-        {document.sale && <section className="billing-document-lines">
+        {returnDocument ? <section className="billing-document-lines">
+          <div className="billing-document-row is-head"><span>Producto devuelto</span><span>Cant./peso</span><span>Precio</span><span>Monto NC</span></div>
+          {returnDocument.items.map((item) => <div className="billing-document-row" key={item.id}>
+            <span><strong>{item.productName}</strong><small>{item.unit === "KG" ? "precio por kg" : "precio por unidad"}</small></span>
+            <span>{formatQuantity(item.quantity, item.unit)}</span><span>{formatClp(item.unitPrice)}</span><span>{formatClp(item.totalAmount)}</span>
+          </div>)}
+          {returnDocument.discountAmount > 0 && <div className="billing-document-discount"><span>Descuento proporcional devuelto</span><strong>−{formatClp(returnDocument.discountAmount)}</strong></div>}
+          <div className="billing-document-discount"><span>Motivo devolución</span><strong>{returnDocument.reason}</strong></div>
+        </section> : document.sale && <section className="billing-document-lines">
           <div className="billing-document-row is-head"><span>Producto</span><span>Cant./peso</span><span>Precio</span><span>Total</span></div>
           {document.sale.items.map((item) => <div className="billing-document-row" key={item.id}>
             <span><strong>{item.productName}</strong><small>{item.unit === "KG" ? "precio por kg" : "precio por unidad"}</small></span>
@@ -83,6 +96,7 @@ export default async function DteDetailPage({ params }: { params: Promise<{ id: 
           <div><span>IVA {document.vatRate}%</span><strong>{formatClp(document.vatAmount)}</strong></div><div className="is-total"><span>Total</span><strong>{formatClp(document.totalAmount)}</strong></div>
         </section>
 
+        {document.parent && <section className="billing-document-message"><strong>Referencia tributaria</strong><p>Este documento referencia {dteTypeLabel(document.parent.type)} tipo {document.parent.typeCode}, folio {document.parent.folio}, emitido el {document.parent.issueDate.toLocaleDateString("es-CL")}.</p></section>}
         {document.siiStatusMessage && <section className="billing-document-message"><strong>Respuesta integración</strong><p>{document.siiStatusMessage}</p></section>}
         {document.errorMessage && <section className="billing-document-message is-error"><strong>Error</strong><p>{document.errorMessage}</p></section>}
         <footer>{document.environment === "MOCK" ? "SIMULACIÓN INTERNA · Este documento no fue enviado al SII." : "Representación administrativa del DTE. Verifica aceptación y XML firmado antes de usar como respaldo tributario."}</footer>
