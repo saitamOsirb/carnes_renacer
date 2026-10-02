@@ -9,6 +9,7 @@ import {
   type DteDocument,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { toQuantityNumber } from "@/lib/quantity";
 import { assertSiiCanSubmit, getSiiConfig } from "@/lib/sii/config";
 import { buildDteXmlDraft, type DteXmlSnapshot } from "@/lib/sii/dte-xml";
 import { queryDteStatus, submitDteToSii } from "@/lib/sii/transport";
@@ -123,15 +124,7 @@ async function recordTransportResult(document: DteDocument, result: Awaited<Retu
         errorMessage: result.status === DteStatus.ERROR ? result.message : null,
       },
     });
-    await tx.dteEvent.create({
-      data: {
-        documentId: document.id,
-        status: result.status,
-        code: result.code,
-        message: result.message,
-        raw: result.raw,
-      },
-    });
+    await tx.dteEvent.create({ data: { documentId: document.id, status: result.status, code: result.code, message: result.message, raw: result.raw } });
     return updated;
   });
 }
@@ -139,13 +132,8 @@ async function recordTransportResult(document: DteDocument, result: Awaited<Retu
 async function markTransportError(documentIdValue: string, error: unknown): Promise<never> {
   const message = error instanceof Error ? error.message.slice(0, 1000) : "Error desconocido al enviar el DTE.";
   await prisma.$transaction(async (tx) => {
-    await tx.dteDocument.update({
-      where: { id: documentIdValue },
-      data: { status: DteStatus.ERROR, errorMessage: message, siiStatusMessage: message },
-    });
-    await tx.dteEvent.create({
-      data: { documentId: documentIdValue, status: DteStatus.ERROR, message },
-    });
+    await tx.dteDocument.update({ where: { id: documentIdValue }, data: { status: DteStatus.ERROR, errorMessage: message, siiStatusMessage: message } });
+    await tx.dteEvent.create({ data: { documentId: documentIdValue, status: DteStatus.ERROR, message } });
   });
   throw new DteBillingError(message);
 }
@@ -161,21 +149,12 @@ export async function issuePosSaleDte(input: IssuePosDteInput): Promise<DteDocum
   const typeCode = dteTypeCode(input.type);
   const sale = await prisma.posSale.findUnique({
     where: { id: input.saleId.slice(0, 30) },
-    include: {
-      items: { orderBy: { productName: "asc" } },
-      dteDocuments: { orderBy: { createdAt: "desc" } },
-    },
+    include: { items: { orderBy: { productName: "asc" } }, dteDocuments: { orderBy: { createdAt: "desc" } } },
   });
   if (!sale) throw new DteBillingError("Venta POS no encontrada.");
 
-  const blocking = sale.dteDocuments.find((item) =>
-    [33, 39].includes(item.typeCode)
-    && item.status !== DteStatus.CANCELLED
-    && item.status !== DteStatus.REJECTED,
-  );
-  if (blocking) {
-    throw new DteBillingError(`La venta ya tiene ${dteTypeLabel(blocking.type)} folio ${blocking.folio} en estado ${blocking.status}.`);
-  }
+  const blocking = sale.dteDocuments.find((item) => [33, 39].includes(item.typeCode) && item.status !== DteStatus.CANCELLED && item.status !== DteStatus.REJECTED);
+  if (blocking) throw new DteBillingError(`La venta ya tiene ${dteTypeLabel(blocking.type)} folio ${blocking.folio} en estado ${blocking.status}.`);
 
   const receiverRutRaw = clean(input.receiverRut, 20) ?? sale.customerRut;
   const receiverName = clean(input.receiverName, 191) ?? sale.customerName;
@@ -186,9 +165,7 @@ export async function issuePosSaleDte(input: IssuePosDteInput): Promise<DteDocum
 
   if (input.type === DteDocumentType.FACTURA_ELECTRONICA) {
     if (!receiverRutRaw || !isValidRut(receiverRutRaw)) throw new DteBillingError("Para emitir factura debes ingresar un RUT receptor válido.");
-    if (!receiverName || !receiverGiro || !receiverAddress || !receiverCommune) {
-      throw new DteBillingError("Para emitir factura completa razón social, giro, dirección y comuna del receptor.");
-    }
+    if (!receiverName || !receiverGiro || !receiverAddress || !receiverCommune) throw new DteBillingError("Para emitir factura completa razón social, giro, dirección y comuna del receptor.");
   }
 
   const receiverRut = receiverRutRaw ? normalizeRut(receiverRutRaw) : null;
@@ -213,14 +190,7 @@ export async function issuePosSaleDte(input: IssuePosDteInput): Promise<DteDocum
         commune: placeholder(config.company.commune, "Comuna pendiente", config.environment),
         city: placeholder(config.company.city, "Ciudad pendiente", config.environment),
       },
-      receiver: receiverRut && receiverName ? {
-        rut: receiverRut,
-        name: receiverName,
-        giro: receiverGiro,
-        address: receiverAddress,
-        commune: receiverCommune,
-        city: receiverCity,
-      } : null,
+      receiver: receiverRut && receiverName ? { rut: receiverRut, name: receiverName, giro: receiverGiro, address: receiverAddress, commune: receiverCommune, city: receiverCity } : null,
       netAmount: net,
       exemptAmount: 0,
       vatRate: config.vatRate,
@@ -229,7 +199,7 @@ export async function issuePosSaleDte(input: IssuePosDteInput): Promise<DteDocum
       lines: sale.items.map((item, index) => ({
         line: index + 1,
         name: item.productName,
-        quantity: item.quantity,
+        quantity: toQuantityNumber(item.quantity),
         unit: item.unit,
         unitPrice: item.unitPrice,
         amount: item.subtotal,
@@ -262,14 +232,7 @@ export async function issuePosSaleDte(input: IssuePosDteInput): Promise<DteDocum
         issuedAt: now,
       },
     });
-    await tx.dteEvent.create({
-      data: {
-        documentId: created.id,
-        status: DteStatus.GENERATED,
-        code: "DTE_GENERATED",
-        message: `${dteTypeLabel(input.type)} generada desde venta ${sale.saleNumber}.`,
-      },
-    });
+    await tx.dteEvent.create({ data: { documentId: created.id, status: DteStatus.GENERATED, code: "DTE_GENERATED", message: `${dteTypeLabel(input.type)} generada desde venta ${sale.saleNumber}.` } });
     return created;
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
@@ -294,12 +257,8 @@ export async function issuePosSaleDte(input: IssuePosDteInput): Promise<DteDocum
 export async function retryDteSubmission(documentIdValue: string): Promise<DteDocument> {
   const document = await prisma.dteDocument.findUnique({ where: { id: documentIdValue.slice(0, 30) } });
   if (!document) throw new DteBillingError("DTE no encontrado.");
-  const retryable = document.status === DteStatus.ERROR
-    || document.status === DteStatus.GENERATED
-    || document.status === DteStatus.QUEUED;
-  if (!retryable) {
-    throw new DteBillingError(`El documento está en estado ${document.status} y no puede reenviarse automáticamente.`);
-  }
+  const retryable = document.status === DteStatus.ERROR || document.status === DteStatus.GENERATED || document.status === DteStatus.QUEUED;
+  if (!retryable) throw new DteBillingError(`El documento está en estado ${document.status} y no puede reenviarse automáticamente.`);
   const config = getSiiConfig();
   if (document.environment !== config.environment) throw new DteBillingError("El ambiente configurado cambió desde que se generó el DTE. No se reenviará para evitar mezclar ambientes.");
   if (config.environment !== DteEnvironment.MOCK) assertSiiCanSubmit(config);
@@ -332,9 +291,7 @@ export async function syncDteStatus(documentIdValue: string): Promise<DteDocumen
     return await recordTransportResult(document, result);
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 1000) : "No fue posible consultar el estado SII.";
-    await prisma.dteEvent.create({
-      data: { documentId: document.id, status: document.status, code: "STATUS_QUERY_ERROR", message },
-    });
+    await prisma.dteEvent.create({ data: { documentId: document.id, status: document.status, code: "STATUS_QUERY_ERROR", message } });
     throw new DteBillingError(message);
   }
 }
