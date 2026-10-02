@@ -4,6 +4,13 @@ import { randomUUID } from "node:crypto";
 import { InventoryMovementType, PosPaymentMethod, PosShiftStatus, Prisma, type PosSale } from "@prisma/client";
 import { syncProductInventory } from "@/lib/inventory-service";
 import { prisma } from "@/lib/prisma";
+import {
+  calculateQuantitySubtotal,
+  formatQuantity,
+  isValidQuantityForUnit,
+  roundQuantity,
+  toQuantityNumber,
+} from "@/lib/quantity";
 import { reconcileWarehouseLocationStock } from "@/lib/warehouse-location-service";
 
 export type PosSaleLineInput = {
@@ -46,10 +53,10 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
 
   const normalizedItems = input.items.map((item) => ({
     productId: typeof item.productId === "string" ? item.productId.slice(0, 30) : "",
-    quantity: Number(item.quantity),
+    quantity: roundQuantity(Number(item.quantity)),
   }));
 
-  if (normalizedItems.some((item) => !item.productId || !Number.isInteger(item.quantity) || item.quantity <= 0 || item.quantity > 100_000)) {
+  if (normalizedItems.some((item) => !item.productId || !Number.isFinite(item.quantity) || item.quantity <= 0 || item.quantity > 100_000)) {
     throw new PosSaleError("El carrito contiene cantidades inválidas.");
   }
 
@@ -91,12 +98,24 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
     const lines = normalizedItems.map((item) => {
       const product = productMap.get(item.productId);
       if (!product) throw new PosSaleError("Producto inválido en el carrito.");
+      if (!isValidQuantityForUnit(item.quantity, product.unit)) {
+        throw new PosSaleError(
+          product.unit === "KG"
+            ? `${product.name}: ingresa un peso válido con hasta tres decimales.`
+            : `${product.name}: los productos por unidad solo admiten cantidades enteras.`,
+        );
+      }
+
       const stock = stockMap.get(item.productId);
-      const available = stock ? Math.max(0, stock.onHand - stock.reserved) : 0;
-      if (!stock || available < item.quantity) throw new PosSaleError(`Stock insuficiente de ${product.name} en ${warehouse.name}. Disponible: ${available}.`);
-      const lineSubtotal = product.price * item.quantity;
-      if (!Number.isSafeInteger(lineSubtotal) || lineSubtotal < 0) throw new PosSaleError(`Subtotal inválido para ${product.name}.`);
-      return { product, stock, quantity: item.quantity, subtotal: lineSubtotal };
+      const onHand = stock ? toQuantityNumber(stock.onHand) : 0;
+      const reserved = stock ? toQuantityNumber(stock.reserved) : 0;
+      const available = roundQuantity(Math.max(0, onHand - reserved));
+      if (!stock || available < item.quantity) {
+        throw new PosSaleError(`Stock insuficiente de ${product.name} en ${warehouse.name}. Disponible: ${formatQuantity(available, product.unit)}.`);
+      }
+      const lineSubtotal = calculateQuantitySubtotal(product.price, item.quantity);
+      if (!Number.isSafeInteger(lineSubtotal) || lineSubtotal <= 0) throw new PosSaleError(`Subtotal inválido para ${product.name}.`);
+      return { product, stock, onHand, reserved, quantity: item.quantity, subtotal: lineSubtotal };
     });
 
     const subtotal = lines.reduce((sum, line) => sum + line.subtotal, 0);
@@ -117,7 +136,7 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
 
     const number = saleNumber();
     for (const line of lines) {
-      const onHandAfter = line.stock.onHand - line.quantity;
+      const onHandAfter = roundQuantity(line.onHand - line.quantity);
       const updated = await tx.inventoryStock.updateMany({
         where: { id: line.stock.id, onHand: line.stock.onHand, reserved: line.stock.reserved },
         data: { onHand: { decrement: line.quantity } },
@@ -131,7 +150,7 @@ export async function createPosSale(input: CreatePosSaleInput): Promise<PosSale>
           type: InventoryMovementType.SALE,
           quantity: -line.quantity,
           onHandAfter,
-          reservedAfter: line.stock.reserved,
+          reservedAfter: line.reserved,
           note: `Venta POS ${number} · ${shift.register.name} · ${shift.user.name}`,
           reference: number,
         },
