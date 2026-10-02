@@ -45,6 +45,8 @@ enum InventoryMovementType {
   RESERVATION_RELEASE
   SALE
   RETURN
+  PRODUCTION_CONSUME
+  PRODUCTION_OUTPUT
 }
 
 enum PosPaymentMethod {
@@ -160,6 +162,27 @@ enum LotMovementType {
   TRANSFER_IN
   RETURN
   ADJUSTMENT
+  PRODUCTION_CONSUME
+  PRODUCTION_OUTPUT
+}
+
+enum ProductionProcessType {
+  DESPOSTE
+  PORCIONADO
+  MOLIENDA
+  ENVASADO
+  ELABORACION
+  OTRO
+}
+
+enum ProductionWasteType {
+  RECORTE
+  HUESO
+  GRASA
+  MERMA_PROCESO
+  DERRAME
+  DETERIORO
+  OTRO
 }
 
 model Product {
@@ -186,6 +209,9 @@ model Product {
   purchaseOrderItems         PurchaseOrderItem[]
   purchaseReceiptItems       PurchaseReceiptItem[]
   lots                       ProductLot[]
+  productionInputs           ProductionInput[]
+  productionOutputs          ProductionOutput[]
+  productionWastes           ProductionWaste[]
   warehousePlacements        WarehouseProductPlacement[]
   warehouseLocationMovements WarehouseLocationMovement[]
 
@@ -223,6 +249,7 @@ model Warehouse {
   dispatchesFrom             Dispatch[]                  @relation("DispatchSourceWarehouse")
   dispatchesTo               Dispatch[]                  @relation("DispatchDestinationWarehouse")
   purchaseOrders             PurchaseOrder[]
+  productionBatches          ProductionBatch[]
   lotStocks                  InventoryLotStock[]
   lotMovements               InventoryLotMovement[]
   lotPlacements              WarehouseLotPlacement[]
@@ -746,6 +773,7 @@ model ProductLot {
   supplierId            String?                   @db.VarChar(30)
   purchaseReceiptItemId String?                   @unique @db.VarChar(30)
   supplierLotNumber     String?                   @db.VarChar(100)
+  unitCostNet           Int?
   manufacturedAt        DateTime?                 @db.DateTime(3)
   expirationDate        DateTime?                 @db.DateTime(3)
   createdAt             DateTime                  @default(now()) @db.DateTime(3)
@@ -760,6 +788,8 @@ model ProductLot {
   posReturnAllocations  PosReturnLotAllocation[]
   orderAllocations      OrderItemLotAllocation[]
   dispatchAllocations   DispatchLotAllocation[]
+  productionInputs      ProductionInput[]
+  productionOutput      ProductionOutput?
 
   @@index([productId, expirationDate])
   @@index([supplierId, supplierLotNumber])
@@ -870,6 +900,86 @@ model DispatchLotAllocation {
 
   @@unique([dispatchItemId, lotId])
   @@index([lotId])
+}
+
+model ProductionBatch {
+  id                  String                @id @default(cuid()) @db.VarChar(30)
+  productionNumber    String                @unique @db.VarChar(40)
+  requestKey          String                @unique @db.VarChar(64)
+  warehouseId         String                @db.VarChar(30)
+  processType         ProductionProcessType
+  performedBy         String                @db.VarChar(80)
+  notes               String?               @db.VarChar(1000)
+  totalInputQuantity  Decimal               @db.Decimal(14, 3)
+  totalOutputQuantity Decimal               @db.Decimal(14, 3)
+  totalWasteQuantity  Decimal               @db.Decimal(14, 3)
+  yieldPercent        Decimal               @db.Decimal(7, 3)
+  totalInputCost      Int?
+  createdAt           DateTime              @default(now()) @db.DateTime(3)
+  warehouse           Warehouse             @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  inputs              ProductionInput[]
+  outputs             ProductionOutput[]
+  wastes              ProductionWaste[]
+
+  @@index([warehouseId, createdAt])
+  @@index([processType, createdAt])
+}
+
+model ProductionInput {
+  id                String          @id @default(cuid()) @db.VarChar(30)
+  productionBatchId String          @db.VarChar(30)
+  lotId             String          @db.VarChar(30)
+  productId         String          @db.VarChar(30)
+  productName       String          @db.VarChar(191)
+  unit              UnitType
+  quantity          Decimal         @db.Decimal(14, 3)
+  unitCostNet       Int?
+  totalCostNet      Int?
+  createdAt         DateTime        @default(now()) @db.DateTime(3)
+  productionBatch   ProductionBatch @relation(fields: [productionBatchId], references: [id], onDelete: Cascade)
+  lot               ProductLot      @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  product           Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([productionBatchId, lotId])
+  @@index([lotId])
+  @@index([productId])
+}
+
+model ProductionOutput {
+  id                String          @id @default(cuid()) @db.VarChar(30)
+  productionBatchId String          @db.VarChar(30)
+  lotId             String          @unique @db.VarChar(30)
+  productId         String          @db.VarChar(30)
+  productName       String          @db.VarChar(191)
+  unit              UnitType
+  quantity          Decimal         @db.Decimal(14, 3)
+  allocatedCostNet  Int?
+  unitCostNet       Int?
+  manufacturedAt    DateTime?       @db.DateTime(3)
+  expirationDate    DateTime?       @db.DateTime(3)
+  createdAt         DateTime        @default(now()) @db.DateTime(3)
+  productionBatch   ProductionBatch @relation(fields: [productionBatchId], references: [id], onDelete: Cascade)
+  lot               ProductLot      @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  product           Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([productionBatchId, productId])
+  @@index([productId])
+}
+
+model ProductionWaste {
+  id                String              @id @default(cuid()) @db.VarChar(30)
+  productionBatchId String              @db.VarChar(30)
+  sourceProductId   String?             @db.VarChar(30)
+  sourceProductName String?             @db.VarChar(191)
+  type              ProductionWasteType
+  quantity          Decimal             @db.Decimal(14, 3)
+  note              String?             @db.VarChar(500)
+  createdAt         DateTime            @default(now()) @db.DateTime(3)
+  productionBatch   ProductionBatch     @relation(fields: [productionBatchId], references: [id], onDelete: Cascade)
+  sourceProduct     Product?            @relation(fields: [sourceProductId], references: [id], onDelete: SetNull)
+
+  @@index([productionBatchId])
+  @@index([sourceProductId])
 }
 
 model Order {
