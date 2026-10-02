@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { PrintButton } from "@/components/admin/print-button";
 import { formatClp } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { dteTypeLabel } from "@/lib/sii/billing-service";
 
 export const dynamic = "force-dynamic";
 
@@ -28,16 +29,37 @@ export default async function PosSaleReceiptPage({ params }: { params: Promise<{
       cashierUser: true,
       shift: { include: { register: true, user: true } },
       items: { orderBy: { productName: "asc" } },
+      dteDocuments: { orderBy: { createdAt: "desc" } },
     },
   });
   if (!sale) notFound();
+
+  const currentDte = sale.dteDocuments[0] ?? null;
 
   return (
     <div className="admin-content admin-content-narrow pos-receipt-page">
       <div className="pos-receipt-actions no-print">
         <Link href={sale.shiftId ? `/admin/pos?shift=${sale.shiftId}` : "/admin/pos"} className="admin-button admin-button-secondary">← Volver al POS</Link>
-        <PrintButton />
+        <div className="pos-receipt-action-group">
+          {currentDte ? (
+            <Link href={`/admin/facturacion/${currentDte.id}`} className="admin-button admin-button-secondary">Ver DTE</Link>
+          ) : (
+            <Link href="/admin/facturacion" className="admin-button admin-button-secondary">Emitir boleta / factura</Link>
+          )}
+          <PrintButton />
+        </div>
       </div>
+
+      {currentDte && (
+        <section className={`pos-dte-banner is-${currentDte.status.toLowerCase()}`}>
+          <div>
+            <span>Documento tributario</span>
+            <strong>{dteTypeLabel(currentDte.type)} · Folio {currentDte.folio}</strong>
+            <small>{currentDte.environment}{currentDte.trackId ? ` · Track ${currentDte.trackId}` : ""}</small>
+          </div>
+          <strong>{currentDte.status}</strong>
+        </section>
+      )}
 
       <article className="pos-receipt">
         <header>
@@ -80,7 +102,7 @@ export default async function PosSaleReceiptPage({ params }: { params: Promise<{
         </section>
 
         {sale.notes && <section className="pos-receipt-notes"><strong>Observación</strong><p>{sale.notes}</p></section>}
-        <footer>Documento interno de venta presencial · Renacer Distribuidora</footer>
+        <footer>{currentDte ? `Venta asociada a ${dteTypeLabel(currentDte.type)} folio ${currentDte.folio} · Estado ${currentDte.status}` : "Documento interno de venta presencial · Sin DTE asociado todavía"}</footer>
       </article>
     </div>
   );
