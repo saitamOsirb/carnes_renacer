@@ -10,6 +10,7 @@ import {
   type PurchaseReceipt,
 } from "@prisma/client";
 import { syncProductInventory } from "@/lib/inventory-service";
+import { createReceivedLot } from "@/lib/lot-service";
 import { prisma } from "@/lib/prisma";
 import {
   calculateQuantitySubtotal,
@@ -47,6 +48,9 @@ export type PurchaseReceiptLineInput = {
   purchaseOrderItemId: string;
   quantity: number;
   unitCostNet?: number;
+  supplierLotNumber?: string;
+  manufacturedAt?: Date | null;
+  expirationDate?: Date | null;
 };
 
 export type ReceivePurchaseOrderInput = {
@@ -117,26 +121,19 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput): Prom
   const supplierId = input.supplierId.slice(0, 30);
   const warehouseId = input.warehouseId.slice(0, 30);
   if (!supplierId || !warehouseId) throw new PurchaseError("Selecciona proveedor y bodega de recepción.");
-  if (!Array.isArray(input.items) || input.items.length === 0 || input.items.length > 100) {
-    throw new PurchaseError("La orden debe contener entre 1 y 100 productos.");
-  }
+  if (!Array.isArray(input.items) || input.items.length === 0 || input.items.length > 100) throw new PurchaseError("La orden debe contener entre 1 y 100 productos.");
 
   const normalizedItems = input.items.map((item) => ({
     productId: typeof item.productId === "string" ? item.productId.slice(0, 30) : "",
     quantity: roundQuantity(Number(item.quantity)),
     unitCostNet: Number(item.unitCostNet),
   }));
-  if (new Set(normalizedItems.map((item) => item.productId)).size !== normalizedItems.length) {
-    throw new PurchaseError("No repitas un producto dentro de la misma orden de compra.");
-  }
+  if (new Set(normalizedItems.map((item) => item.productId)).size !== normalizedItems.length) throw new PurchaseError("No repitas un producto dentro de la misma orden de compra.");
 
   const [supplier, warehouse, products] = await Promise.all([
     prisma.supplier.findUnique({ where: { id: supplierId } }),
     prisma.warehouse.findUnique({ where: { id: warehouseId } }),
-    prisma.product.findMany({
-      where: { id: { in: normalizedItems.map((item) => item.productId) }, active: true },
-      select: { id: true, name: true, unit: true },
-    }),
+    prisma.product.findMany({ where: { id: { in: normalizedItems.map((item) => item.productId) }, active: true }, select: { id: true, name: true, unit: true } }),
   ]);
   if (!supplier?.active) throw new PurchaseError("El proveedor seleccionado no está activo.");
   if (!warehouse?.active) throw new PurchaseError("La bodega seleccionada no está activa.");
@@ -147,17 +144,10 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput): Prom
     const product = productMap.get(item.productId);
     if (!product) throw new PurchaseError("Producto inválido en la orden de compra.");
     if (!isValidQuantityForUnit(item.quantity, product.unit, { max: 10_000_000 })) {
-      throw new PurchaseError(product.unit === "KG"
-        ? `${product.name}: el peso debe ser mayor a cero y tener hasta tres decimales.`
-        : `${product.name}: la cantidad debe ser un número entero mayor a cero.`);
+      throw new PurchaseError(product.unit === "KG" ? `${product.name}: el peso debe ser mayor a cero y tener hasta tres decimales.` : `${product.name}: la cantidad debe ser un número entero mayor a cero.`);
     }
     if (!validMoney(item.unitCostNet)) throw new PurchaseError(`${product.name}: el costo neto unitario no es válido.`);
-    return {
-      product,
-      quantity: item.quantity,
-      unitCostNet: item.unitCostNet,
-      netAmount: calculateQuantitySubtotal(item.unitCostNet, item.quantity),
-    };
+    return { product, quantity: item.quantity, unitCostNet: item.unitCostNet, netAmount: calculateQuantitySubtotal(item.unitCostNet, item.quantity) };
   });
 
   const netAmount = lines.reduce((sum, line) => sum + line.netAmount, 0);
@@ -180,17 +170,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput): Prom
         vatAmount,
         totalAmount,
         notes: clean(input.notes, 1000),
-        items: {
-          create: lines.map((line) => ({
-            productId: line.product.id,
-            productName: line.product.name,
-            unit: line.product.unit,
-            orderedQuantity: line.quantity,
-            receivedQuantity: 0,
-            unitCostNet: line.unitCostNet,
-            netAmount: line.netAmount,
-          })),
-        },
+        items: { create: lines.map((line) => ({ productId: line.product.id, productName: line.product.name, unit: line.product.unit, orderedQuantity: line.quantity, receivedQuantity: 0, unitCostNet: line.unitCostNet, netAmount: line.netAmount })) },
       },
     });
   } catch (error) {
@@ -205,20 +185,11 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput): Prom
 export async function cancelPurchaseOrder(purchaseOrderIdValue: string): Promise<PurchaseOrder> {
   const purchaseOrderId = purchaseOrderIdValue.slice(0, 30);
   return prisma.$transaction(async (tx) => {
-    const order = await tx.purchaseOrder.findUnique({
-      where: { id: purchaseOrderId },
-      include: { _count: { select: { receipts: true } } },
-    });
+    const order = await tx.purchaseOrder.findUnique({ where: { id: purchaseOrderId }, include: { _count: { select: { receipts: true } } } });
     if (!order) throw new PurchaseError("Orden de compra no encontrada.");
     if (order.status === PurchaseOrderStatus.CANCELLED) return order;
-    if (order.status === PurchaseOrderStatus.RECEIVED || order._count.receipts > 0) {
-      throw new PurchaseError("No puedes cancelar una orden que ya tiene recepciones. Registra un movimiento correctivo trazable si corresponde.");
-    }
-
-    const updated = await tx.purchaseOrder.updateMany({
-      where: { id: order.id, status: PurchaseOrderStatus.ORDERED },
-      data: { status: PurchaseOrderStatus.CANCELLED, cancelledAt: new Date() },
-    });
+    if (order.status === PurchaseOrderStatus.RECEIVED || order._count.receipts > 0) throw new PurchaseError("No puedes cancelar una orden que ya tiene recepciones. Registra un movimiento correctivo trazable si corresponde.");
+    const updated = await tx.purchaseOrder.updateMany({ where: { id: order.id, status: PurchaseOrderStatus.ORDERED }, data: { status: PurchaseOrderStatus.CANCELLED, cancelledAt: new Date() } });
     if (updated.count !== 1) throw new PurchaseError("La orden cambió mientras intentabas cancelarla. Recarga la pantalla.");
     return tx.purchaseOrder.findUniqueOrThrow({ where: { id: order.id } });
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
@@ -232,33 +203,23 @@ export async function receivePurchaseOrder(input: ReceivePurchaseOrderInput): Pr
   const purchaseOrderId = input.purchaseOrderId.slice(0, 30);
   const receivedBy = required(input.receivedBy, "El responsable de recepción", 80);
   const supplierDocumentNumber = clean(input.supplierDocumentNumber, 100);
-  if (!Array.isArray(input.items) || input.items.length === 0 || input.items.length > 100) {
-    throw new PurchaseError("Ingresa al menos una cantidad recibida.");
-  }
+  if (!Array.isArray(input.items) || input.items.length === 0 || input.items.length > 100) throw new PurchaseError("Ingresa al menos una cantidad recibida.");
 
-  const normalizedItems = input.items
-    .map((item) => ({
-      purchaseOrderItemId: typeof item.purchaseOrderItemId === "string" ? item.purchaseOrderItemId.slice(0, 30) : "",
-      quantity: roundQuantity(Number(item.quantity)),
-      unitCostNet: item.unitCostNet == null ? undefined : Number(item.unitCostNet),
-    }))
-    .filter((item) => item.quantity > 0);
+  const normalizedItems = input.items.map((item) => ({
+    purchaseOrderItemId: typeof item.purchaseOrderItemId === "string" ? item.purchaseOrderItemId.slice(0, 30) : "",
+    quantity: roundQuantity(Number(item.quantity)),
+    unitCostNet: item.unitCostNet == null ? undefined : Number(item.unitCostNet),
+    supplierLotNumber: clean(item.supplierLotNumber, 100),
+    manufacturedAt: item.manufacturedAt ?? null,
+    expirationDate: item.expirationDate ?? null,
+  })).filter((item) => item.quantity > 0);
   if (normalizedItems.length === 0) throw new PurchaseError("Ingresa al menos una cantidad recibida mayor a cero.");
-  if (new Set(normalizedItems.map((item) => item.purchaseOrderItemId)).size !== normalizedItems.length) {
-    throw new PurchaseError("La recepción contiene líneas duplicadas.");
-  }
+  if (new Set(normalizedItems.map((item) => item.purchaseOrderItemId)).size !== normalizedItems.length) throw new PurchaseError("La recepción contiene líneas duplicadas.");
 
   const number = receiptNumber();
   try {
     return await prisma.$transaction(async (tx) => {
-      const order = await tx.purchaseOrder.findUnique({
-        where: { id: purchaseOrderId },
-        include: {
-          supplier: true,
-          warehouse: true,
-          items: true,
-        },
-      });
+      const order = await tx.purchaseOrder.findUnique({ where: { id: purchaseOrderId }, include: { supplier: true, warehouse: true, items: true } });
       if (!order) throw new PurchaseError("Orden de compra no encontrada.");
       if (order.status === PurchaseOrderStatus.CANCELLED) throw new PurchaseError("La orden de compra está cancelada.");
       if (order.status === PurchaseOrderStatus.RECEIVED) throw new PurchaseError("La orden ya fue recibida completamente.");
@@ -271,58 +232,37 @@ export async function receivePurchaseOrder(input: ReceivePurchaseOrderInput): Pr
         const ordered = toQuantityNumber(item.orderedQuantity);
         const alreadyReceived = toQuantityNumber(item.receivedQuantity);
         const remaining = roundQuantity(ordered - alreadyReceived);
-        if (!isValidQuantityForUnit(line.quantity, item.unit, { max: 10_000_000 }) || line.quantity > remaining) {
-          throw new PurchaseError(`${item.productName}: máximo pendiente ${formatQuantity(remaining, item.unit)}.`);
-        }
+        if (!isValidQuantityForUnit(line.quantity, item.unit, { max: 10_000_000 }) || line.quantity > remaining) throw new PurchaseError(`${item.productName}: máximo pendiente ${formatQuantity(remaining, item.unit)}.`);
+        if (line.manufacturedAt && line.expirationDate && line.expirationDate.getTime() < line.manufacturedAt.getTime()) throw new PurchaseError(`${item.productName}: el vencimiento no puede ser anterior a la elaboración.`);
         const unitCostNet = line.unitCostNet ?? item.unitCostNet;
         if (!validMoney(unitCostNet)) throw new PurchaseError(`${item.productName}: el costo neto recibido no es válido.`);
-        return {
-          item,
-          quantity: line.quantity,
-          unitCostNet,
-          netAmount: calculateQuantitySubtotal(unitCostNet, line.quantity),
-        };
+        return { ...line, item, unitCostNet, netAmount: calculateQuantitySubtotal(unitCostNet, line.quantity) };
       });
 
       const receipt = await tx.purchaseReceipt.create({
-        data: {
-          receiptNumber: number,
-          requestKey: key,
-          purchaseOrderId: order.id,
-          documentType: input.documentType ?? null,
-          supplierDocumentNumber,
-          receivedBy,
-          notes: clean(input.notes, 1000),
-          items: {
-            create: lines.map((line) => ({
-              purchaseOrderItemId: line.item.id,
-              productId: line.item.productId,
-              productName: line.item.productName,
-              unit: line.item.unit,
-              quantity: line.quantity,
-              unitCostNet: line.unitCostNet,
-              netAmount: line.netAmount,
-            })),
-          },
-        },
+        data: { receiptNumber: number, requestKey: key, purchaseOrderId: order.id, documentType: input.documentType ?? null, supplierDocumentNumber, receivedBy, notes: clean(input.notes, 1000) },
       });
 
       for (const line of lines) {
-        const changed = await tx.purchaseOrderItem.updateMany({
-          where: { id: line.item.id, receivedQuantity: line.item.receivedQuantity },
-          data: { receivedQuantity: { increment: line.quantity } },
-        });
+        const changed = await tx.purchaseOrderItem.updateMany({ where: { id: line.item.id, receivedQuantity: line.item.receivedQuantity }, data: { receivedQuantity: { increment: line.quantity } } });
         if (changed.count !== 1) throw new PurchaseError("La orden cambió durante la recepción. Recarga e intenta nuevamente.");
+
+        const receiptItem = await tx.purchaseReceiptItem.create({
+          data: {
+            purchaseReceiptId: receipt.id,
+            purchaseOrderItemId: line.item.id,
+            productId: line.item.productId,
+            productName: line.item.productName,
+            unit: line.item.unit,
+            quantity: line.quantity,
+            unitCostNet: line.unitCostNet,
+            netAmount: line.netAmount,
+          },
+        });
 
         const stock = await tx.inventoryStock.upsert({
           where: { warehouseId_productId: { warehouseId: order.warehouseId, productId: line.item.productId } },
-          create: {
-            warehouseId: order.warehouseId,
-            productId: line.item.productId,
-            onHand: line.quantity,
-            reserved: 0,
-            minStock: 0,
-          },
+          create: { warehouseId: order.warehouseId, productId: line.item.productId, onHand: line.quantity, reserved: 0, minStock: 0 },
           update: { onHand: { increment: line.quantity } },
         });
         await tx.inventoryMovement.create({
@@ -337,24 +277,29 @@ export async function receivePurchaseOrder(input: ReceivePurchaseOrderInput): Pr
             note: `Recepción ${receipt.receiptNumber} · ${order.orderNumber} · ${order.supplier.name}${supplierDocumentNumber ? ` · doc. ${supplierDocumentNumber}` : ""}`,
           },
         });
+        try {
+          await createReceivedLot(tx, {
+            warehouseId: order.warehouseId,
+            productId: line.item.productId,
+            supplierId: order.supplierId,
+            purchaseReceiptItemId: receiptItem.id,
+            supplierLotNumber: line.supplierLotNumber,
+            manufacturedAt: line.manufacturedAt,
+            expirationDate: line.expirationDate,
+            quantity: line.quantity,
+            reference: receipt.receiptNumber,
+            note: `Lote recibido desde ${order.supplier.name}`,
+          });
+        } catch (error) {
+          if (error instanceof Error && error.message === "INVALID_LOT_DATES") throw new PurchaseError(`${line.item.productName}: fechas de lote inválidas.`);
+          throw error;
+        }
         await syncProductInventory(tx, line.item.productId);
       }
 
-      const refreshedItems = await tx.purchaseOrderItem.findMany({
-        where: { purchaseOrderId: order.id },
-        select: { orderedQuantity: true, receivedQuantity: true },
-      });
-      const complete = refreshedItems.every((item) =>
-        toQuantityNumber(item.receivedQuantity) >= toQuantityNumber(item.orderedQuantity),
-      );
-      await tx.purchaseOrder.update({
-        where: { id: order.id },
-        data: {
-          status: complete ? PurchaseOrderStatus.RECEIVED : PurchaseOrderStatus.PARTIALLY_RECEIVED,
-          completedAt: complete ? new Date() : null,
-        },
-      });
-
+      const refreshedItems = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId: order.id }, select: { orderedQuantity: true, receivedQuantity: true } });
+      const complete = refreshedItems.every((item) => toQuantityNumber(item.receivedQuantity) >= toQuantityNumber(item.orderedQuantity));
+      await tx.purchaseOrder.update({ where: { id: order.id }, data: { status: complete ? PurchaseOrderStatus.RECEIVED : PurchaseOrderStatus.PARTIALLY_RECEIVED, completedAt: complete ? new Date() : null } });
       return receipt;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   } catch (error) {
