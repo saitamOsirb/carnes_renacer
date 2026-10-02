@@ -24,6 +24,13 @@ function numberValue(value: FormDataEntryValue | null): number {
   return Number(value.trim().replace(",", "."));
 }
 
+function optionalDate(formData: FormData, key: string): Date | null {
+  const raw = text(formData, key, 10);
+  if (!raw) return null;
+  const value = new Date(`${raw}T12:00:00`);
+  return Number.isNaN(value.getTime()) ? null : value;
+}
+
 function statusUrl(path: string, type: "ok" | "error", message: string): string {
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}${type}=${encodeURIComponent(message)}`;
@@ -37,6 +44,7 @@ function message(error: unknown): string {
 function refreshPurchases(orderId?: string): void {
   revalidatePath("/admin/compras");
   revalidatePath("/admin/proveedores");
+  revalidatePath("/admin/lotes");
   revalidatePath("/admin/inventario");
   revalidatePath("/admin/inventario/mapa");
   revalidatePath("/admin/productos");
@@ -112,6 +120,9 @@ export async function receivePurchaseOrderAction(formData: FormData): Promise<vo
     unitCostNet: Number.isFinite(numberValue(formData.get(`cost_${item.id}`)))
       ? Math.trunc(numberValue(formData.get(`cost_${item.id}`)))
       : item.unitCostNet,
+    supplierLotNumber: text(formData, `lot_${item.id}`, 100),
+    manufacturedAt: optionalDate(formData, `manufactured_${item.id}`),
+    expirationDate: optionalDate(formData, `expiration_${item.id}`),
   })).filter((item) => item.quantity > 0);
 
   let receiptNumber = "";
@@ -131,7 +142,7 @@ export async function receivePurchaseOrderAction(formData: FormData): Promise<vo
   }
 
   refreshPurchases(purchaseOrderId);
-  redirect(statusUrl(`/admin/compras/${purchaseOrderId}`, "ok", `Recepción ${receiptNumber} registrada. El stock quedó disponible y pendiente de ubicación WMS.`));
+  redirect(statusUrl(`/admin/compras/${purchaseOrderId}`, "ok", `Recepción ${receiptNumber} registrada con trazabilidad de lote. El stock quedó disponible y pendiente de ubicación WMS por lote.`));
 }
 
 export async function cancelPurchaseOrderAction(formData: FormData): Promise<void> {
