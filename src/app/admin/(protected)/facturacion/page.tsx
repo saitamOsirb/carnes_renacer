@@ -3,7 +3,6 @@ import { DteDocumentType, DteStatus } from "@prisma/client";
 import { issuePosDteAction, retryDteAction, syncDteStatusAction } from "@/app/admin/billing-actions";
 import { formatClp } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
-import { dteTypeLabel } from "@/lib/sii/billing-service";
 import { getSiiConfig, getSiiReadiness } from "@/lib/sii/config";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +24,18 @@ function typeShort(type: DteDocumentType): string {
   if (type === DteDocumentType.FACTURA_ELECTRONICA) return "Factura 33";
   if (type === DteDocumentType.NOTA_CREDITO) return "NC 61";
   return "ND 56";
+}
+
+function isPendingStatus(status: DteStatus): boolean {
+  return status === DteStatus.GENERATED || status === DteStatus.QUEUED || status === DteStatus.SENT;
+}
+
+function isProblemStatus(status: DteStatus): boolean {
+  return status === DteStatus.ERROR || status === DteStatus.REJECTED || status === DteStatus.OBSERVED;
+}
+
+function isRetryableStatus(status: DteStatus): boolean {
+  return status === DteStatus.ERROR || status === DteStatus.GENERATED || status === DteStatus.QUEUED;
 }
 
 export default async function BillingPage({
@@ -61,8 +72,8 @@ export default async function BillingPage({
   ]);
   const readiness = getSiiReadiness(config);
   const accepted = recentDocuments.filter((item) => item.status === DteStatus.ACCEPTED).length;
-  const pending = recentDocuments.filter((item) => [DteStatus.GENERATED, DteStatus.QUEUED, DteStatus.SENT].includes(item.status)).length;
-  const problem = recentDocuments.filter((item) => [DteStatus.ERROR, DteStatus.REJECTED, DteStatus.OBSERVED].includes(item.status)).length;
+  const pending = recentDocuments.filter((item) => isPendingStatus(item.status)).length;
+  const problem = recentDocuments.filter((item) => isProblemStatus(item.status)).length;
 
   return (
     <div className="admin-content billing-page">
@@ -179,7 +190,7 @@ export default async function BillingPage({
                     <div className="billing-row-actions">
                       <Link href={`/admin/facturacion/${document.id}`} className="billing-link">Detalle</Link>
                       {document.trackId && <form action={syncDteStatusAction}><input type="hidden" name="documentId" value={document.id} /><button type="submit">Consultar</button></form>}
-                      {[DteStatus.ERROR, DteStatus.GENERATED, DteStatus.QUEUED].includes(document.status) && <form action={retryDteAction}><input type="hidden" name="documentId" value={document.id} /><button type="submit">Reenviar</button></form>}
+                      {isRetryableStatus(document.status) && <form action={retryDteAction}><input type="hidden" name="documentId" value={document.id} /><button type="submit">Reenviar</button></form>}
                     </div>
                   </td>
                 </tr>
