@@ -273,13 +273,15 @@ export function WarehouseWebGLViewer({ widthCm, depthCm, heightCm, objects, sele
   selectRef.current = onSelect;
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const gl = canvas.getContext("webgl2", { antialias: true, alpha: false });
-    if (!gl) {
+    const canvasCandidate = canvasRef.current;
+    if (!canvasCandidate) return;
+    const canvas: HTMLCanvasElement = canvasCandidate;
+    const glCandidate = canvas.getContext("webgl2", { antialias: true, alpha: false });
+    if (!glCandidate) {
       setError("Este navegador o dispositivo no tiene WebGL2 disponible.");
       return;
     }
+    const gl: WebGL2RenderingContext = glCandidate;
 
     let locations: ProgramLocations;
     try {
