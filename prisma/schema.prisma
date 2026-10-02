@@ -44,6 +44,7 @@ enum InventoryMovementType {
   RESERVATION
   RESERVATION_RELEASE
   SALE
+  RETURN
 }
 
 enum PosPaymentMethod {
@@ -140,6 +141,7 @@ model Product {
   inventoryStocks            InventoryStock[]
   inventoryMovements         InventoryMovement[]
   posSaleItems               PosSaleItem[]
+  posReturnItems             PosReturnItem[]
   warehousePlacements        WarehouseProductPlacement[]
   warehouseLocationMovements WarehouseLocationMovement[]
 
@@ -173,6 +175,7 @@ model Warehouse {
   movements                  InventoryMovement[]
   reservations               InventoryReservation[]
   posSales                   PosSale[]
+  posReturns                 PosReturn[]
   cashRegisters              CashRegister[]
   layout                     WarehouseLayout?
   productPlacements          WarehouseProductPlacement[]
@@ -350,6 +353,7 @@ model PosShift {
   register      CashRegister   @relation(fields: [registerId], references: [id], onDelete: Restrict)
   user          PosUser        @relation(fields: [userId], references: [id], onDelete: Restrict)
   sales         PosSale[]
+  returns       PosReturn[]
   cashMovements PosCashMovement[]
 
   @@index([status, openedAt])
@@ -365,6 +369,7 @@ model PosCashMovement {
   reason    String              @db.VarChar(500)
   createdAt DateTime            @default(now()) @db.DateTime(3)
   shift     PosShift            @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  posReturn PosReturn?
 
   @@index([shiftId, createdAt])
 }
@@ -430,6 +435,7 @@ model PosSale {
   cashierUser    PosUser?         @relation("PosCashierSales", fields: [cashierId], references: [id], onDelete: SetNull)
   customer       Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
   items          PosSaleItem[]
+  returns        PosReturn[]
   dteDocuments   DteDocument[]
 
   @@index([createdAt])
@@ -440,18 +446,67 @@ model PosSale {
 }
 
 model PosSaleItem {
-  id          String   @id @default(cuid()) @db.VarChar(30)
-  saleId      String   @db.VarChar(30)
-  productId   String   @db.VarChar(30)
-  productName String   @db.VarChar(191)
+  id          String          @id @default(cuid()) @db.VarChar(30)
+  saleId      String          @db.VarChar(30)
+  productId   String          @db.VarChar(30)
+  productName String          @db.VarChar(191)
   unit        UnitType
-  quantity    Decimal  @db.Decimal(14, 3)
+  quantity    Decimal         @db.Decimal(14, 3)
   unitPrice   Int
   subtotal    Int
-  sale        PosSale  @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  sale        PosSale         @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product     Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  returnItems PosReturnItem[]
 
   @@index([saleId])
+  @@index([productId])
+}
+
+model PosReturn {
+  id             String           @id @default(cuid()) @db.VarChar(30)
+  returnNumber   String           @unique @db.VarChar(40)
+  requestKey     String           @unique @db.VarChar(64)
+  saleId         String           @db.VarChar(30)
+  warehouseId    String           @db.VarChar(30)
+  shiftId        String?          @db.VarChar(30)
+  cashMovementId String?          @unique @db.VarChar(30)
+  refundMethod   PosPaymentMethod
+  grossAmount    Int
+  discountAmount Int              @default(0)
+  totalAmount    Int
+  reason         String           @db.VarChar(500)
+  createdAt      DateTime         @default(now()) @db.DateTime(3)
+  sale           PosSale          @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  warehouse      Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  shift          PosShift?        @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  cashMovement   PosCashMovement? @relation(fields: [cashMovementId], references: [id], onDelete: SetNull)
+  items          PosReturnItem[]
+  dteDocuments   DteDocument[]
+
+  @@index([saleId, createdAt])
+  @@index([warehouseId, createdAt])
+  @@index([shiftId, createdAt])
+}
+
+model PosReturnItem {
+  id             String      @id @default(cuid()) @db.VarChar(30)
+  returnId       String      @db.VarChar(30)
+  saleItemId     String      @db.VarChar(30)
+  productId      String      @db.VarChar(30)
+  productName    String      @db.VarChar(191)
+  unit           UnitType
+  quantity       Decimal     @db.Decimal(14, 3)
+  unitPrice      Int
+  grossAmount    Int
+  discountAmount Int         @default(0)
+  totalAmount    Int
+  createdAt      DateTime    @default(now()) @db.DateTime(3)
+  posReturn      PosReturn   @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  saleItem       PosSaleItem @relation(fields: [saleItemId], references: [id], onDelete: Restrict)
+  product        Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([returnId])
+  @@index([saleItemId])
   @@index([productId])
 }
 
@@ -562,6 +617,7 @@ model DteFolioSequence {
 model DteDocument {
   id               String          @id @default(cuid()) @db.VarChar(30)
   saleId           String?         @db.VarChar(30)
+  returnId         String?         @db.VarChar(30)
   parentId         String?         @db.VarChar(30)
   type             DteDocumentType
   typeCode         Int
@@ -593,12 +649,14 @@ model DteDocument {
   createdAt        DateTime         @default(now()) @db.DateTime(3)
   updatedAt        DateTime         @updatedAt @db.DateTime(3)
   sale             PosSale?        @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  posReturn        PosReturn?      @relation(fields: [returnId], references: [id], onDelete: Restrict)
   parent           DteDocument?     @relation("DteReferences", fields: [parentId], references: [id], onDelete: Restrict)
   references       DteDocument[]    @relation("DteReferences")
   events           DteEvent[]
 
   @@unique([environment, typeCode, folio])
   @@index([saleId, createdAt])
+  @@index([returnId, createdAt])
   @@index([status, createdAt])
   @@index([trackId])
   @@index([parentId])
