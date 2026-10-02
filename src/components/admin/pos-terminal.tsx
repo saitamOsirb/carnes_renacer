@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPosSaleAction } from "@/app/admin/pos-actions";
 import { formatClp } from "@/lib/format";
 
@@ -37,18 +37,45 @@ type CartLine = {
   quantity: number;
 };
 
+type ScanTone = "idle" | "success" | "warning" | "error";
+type DetectedBarcode = { rawValue: string };
+type BarcodeDetectorLike = { detect(source: CanvasImageSource): Promise<DetectedBarcode[]> };
+type BarcodeDetectorConstructor = new () => BarcodeDetectorLike;
+
+type ResolverResponse = {
+  productId?: string;
+  barcode?: string;
+  error?: string;
+};
+
 function unitLabel(unit: PosProduct["unit"]): string {
   return unit === "KG" ? "kg" : "un.";
+}
+
+function normalizeBarcode(value: string): string {
+  return value.replace(/\s+/g, "").trim().toUpperCase().slice(0, 80);
 }
 
 export function PosTerminal({ shiftId, registerName, cashierName, warehouseName, products, customers }: PosTerminalProps) {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("ALL");
   const [cart, setCart] = useState<CartLine[]>([]);
+  const cartRef = useRef<CartLine[]>([]);
   const [discount, setDiscount] = useState("0");
   const [paymentMethod, setPaymentMethod] = useState("CASH");
   const [amountReceived, setAmountReceived] = useState("");
   const [customerId, setCustomerId] = useState("");
+  const [barcodeInput, setBarcodeInput] = useState("");
+  const [scanMessage, setScanMessage] = useState("Lector listo. Escanea un código y presiona Enter.");
+  const [scanTone, setScanTone] = useState<ScanTone>("idle");
+  const [cameraSupported, setCameraSupported] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const barcodeRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const scanFrameRef = useRef<number | null>(null);
+  const detectBusyRef = useRef(false);
+  const resolveBusyRef = useRef(false);
 
   const productMap = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
   const categories = useMemo(() => [...new Set(products.map((product) => product.category))].sort((a, b) => a.localeCompare(b, "es")), [products]);
@@ -60,6 +87,23 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
       return `${product.name} ${product.category}`.toLocaleLowerCase("es").includes(term);
     });
   }, [products, search, category]);
+
+  useEffect(() => {
+    const barcodeDetector = (window as Window & { BarcodeDetector?: BarcodeDetectorConstructor }).BarcodeDetector;
+    setCameraSupported(Boolean(barcodeDetector && navigator.mediaDevices?.getUserMedia));
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "F8") {
+        event.preventDefault();
+        barcodeRef.current?.focus();
+        barcodeRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => () => stopCamera(), []);
 
   const selectedCustomer = customers.find((customer) => customer.id === customerId) ?? null;
   const cartDetailed = cart.flatMap((line) => {
@@ -73,23 +117,163 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
   const change = paymentMethod === "CASH" ? Math.max(0, received - total) : 0;
   const cashInsufficient = paymentMethod === "CASH" && received < total;
 
-  function addProduct(product: PosProduct) {
-    if (product.available <= 0) return;
-    setCart((current) => {
-      const found = current.find((line) => line.productId === product.id);
-      if (!found) return [...current, { productId: product.id, quantity: 1 }];
-      if (found.quantity >= product.available) return current;
-      return current.map((line) => line.productId === product.id ? { ...line, quantity: line.quantity + 1 } : line);
-    });
+  function replaceCart(next: CartLine[]) {
+    cartRef.current = next;
+    setCart(next);
+  }
+
+  function addProduct(product: PosProduct, source: "manual" | "scanner" = "manual", barcode = "") {
+    if (product.available <= 0) {
+      if (source === "scanner") {
+        setScanTone("error");
+        setScanMessage(`${product.name}: sin stock disponible en ${warehouseName}.`);
+      }
+      return;
+    }
+
+    const current = cartRef.current;
+    const found = current.find((line) => line.productId === product.id);
+    if (found && found.quantity >= product.available) {
+      if (source === "scanner") {
+        setScanTone("warning");
+        setScanMessage(`${product.name}: ya alcanzaste el máximo disponible (${product.available} ${unitLabel(product.unit)}).`);
+      }
+      return;
+    }
+
+    const next = found
+      ? current.map((line) => line.productId === product.id ? { ...line, quantity: line.quantity + 1 } : line)
+      : [...current, { productId: product.id, quantity: 1 }];
+    replaceCart(next);
+
+    if (source === "scanner") {
+      const nextQuantity = (found?.quantity ?? 0) + 1;
+      setScanTone("success");
+      setScanMessage(`${barcode ? `${barcode} · ` : ""}${product.name} agregado. Cantidad en carrito: ${nextQuantity}.`);
+    }
   }
 
   function updateQuantity(product: PosProduct, quantity: number) {
     if (quantity <= 0) {
-      setCart((current) => current.filter((line) => line.productId !== product.id));
+      replaceCart(cartRef.current.filter((line) => line.productId !== product.id));
       return;
     }
     const safeQuantity = Math.min(product.available, Math.max(1, Math.trunc(quantity)));
-    setCart((current) => current.map((line) => line.productId === product.id ? { ...line, quantity: safeQuantity } : line));
+    replaceCart(cartRef.current.map((line) => line.productId === product.id ? { ...line, quantity: safeQuantity } : line));
+  }
+
+  async function resolveBarcode(raw: string, source: "lector" | "cámara") {
+    const code = normalizeBarcode(raw);
+    if (!code || resolveBusyRef.current) return;
+    if (!/^[A-Z0-9._-]{4,80}$/.test(code)) {
+      setScanTone("error");
+      setScanMessage("El código leído no tiene un formato válido.");
+      setBarcodeInput("");
+      barcodeRef.current?.focus();
+      return;
+    }
+
+    resolveBusyRef.current = true;
+    setScanTone("idle");
+    setScanMessage(`Buscando ${code}…`);
+    try {
+      const response = await fetch(`/admin/api/barcode/resolve?code=${encodeURIComponent(code)}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      const payload = await response.json() as ResolverResponse;
+
+      if (response.status === 401) {
+        setScanTone("error");
+        setScanMessage("La sesión administrativa expiró. Vuelve a iniciar sesión antes de continuar vendiendo.");
+        return;
+      }
+      if (!response.ok || !payload.productId) {
+        setScanTone("error");
+        setScanMessage(payload.error === "Código no registrado." ? `Código ${code} no registrado.` : (payload.error ?? `No fue posible resolver ${code}.`));
+        return;
+      }
+
+      const product = productMap.get(payload.productId);
+      if (!product) {
+        setScanTone("warning");
+        setScanMessage(`Código ${code} válido, pero el producto no está disponible en ${warehouseName}.`);
+        return;
+      }
+
+      addProduct(product, "scanner", code);
+      if (source === "cámara") stopCamera();
+    } catch {
+      setScanTone("error");
+      setScanMessage("No fue posible consultar el código. Revisa la conexión e intenta nuevamente.");
+    } finally {
+      resolveBusyRef.current = false;
+      setBarcodeInput("");
+      window.setTimeout(() => barcodeRef.current?.focus(), 0);
+    }
+  }
+
+  function stopCamera() {
+    if (scanFrameRef.current !== null) {
+      cancelAnimationFrame(scanFrameRef.current);
+      scanFrameRef.current = null;
+    }
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    detectBusyRef.current = false;
+    setCameraOpen(false);
+  }
+
+  async function startCamera() {
+    const detectorCtor = (window as Window & { BarcodeDetector?: BarcodeDetectorConstructor }).BarcodeDetector;
+    if (!detectorCtor || !navigator.mediaDevices?.getUserMedia) {
+      setScanTone("warning");
+      setScanMessage("Este navegador no soporta cámara para códigos. Usa el lector USB/Bluetooth.");
+      return;
+    }
+
+    try {
+      stopCamera();
+      setCameraOpen(true);
+      setScanTone("idle");
+      setScanMessage("Abriendo cámara…");
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+      mediaStreamRef.current = stream;
+      const video = videoRef.current;
+      if (!video) throw new Error("No se encontró el visor de cámara.");
+      video.srcObject = stream;
+      await video.play();
+      const detector = new detectorCtor();
+      setScanMessage("Apunta la cámara al código de barras.");
+
+      const scan = async () => {
+        if (!mediaStreamRef.current || !videoRef.current) return;
+        if (video.readyState >= 2 && !detectBusyRef.current && !resolveBusyRef.current) {
+          detectBusyRef.current = true;
+          try {
+            const detected = await detector.detect(video);
+            const code = detected.find((item) => item.rawValue)?.rawValue;
+            if (code) {
+              await resolveBarcode(code, "cámara");
+              return;
+            }
+          } catch {
+            // Un frame puede fallar temporalmente sin invalidar el escáner.
+          } finally {
+            detectBusyRef.current = false;
+          }
+        }
+        scanFrameRef.current = requestAnimationFrame(scan);
+      };
+      scanFrameRef.current = requestAnimationFrame(scan);
+    } catch (error) {
+      stopCamera();
+      setScanTone("error");
+      setScanMessage(error instanceof Error ? `No fue posible usar la cámara: ${error.message}` : "No fue posible usar la cámara.");
+    }
   }
 
   return (
@@ -103,10 +287,43 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
 
       <div className="pos-shell">
         <section className="pos-catalog-panel">
+          <div className="pos-scanner-panel">
+            <label className="pos-scanner-field">
+              Escanear código <small>F8 vuelve a enfocar el lector</small>
+              <span className="pos-scanner-input-wrap">
+                <input
+                  ref={barcodeRef}
+                  value={barcodeInput}
+                  onChange={(event) => setBarcodeInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void resolveBarcode(barcodeInput, "lector");
+                    }
+                  }}
+                  placeholder="Escanea o escribe el código y presiona Enter"
+                  autoComplete="off"
+                  autoFocus
+                />
+              </span>
+            </label>
+            <div className="pos-scanner-actions">
+              {cameraSupported && !cameraOpen && <button type="button" className="admin-button admin-button-secondary" onClick={() => void startCamera()}>Usar cámara</button>}
+              {cameraOpen && <button type="button" className="admin-button admin-button-secondary" onClick={stopCamera}>Cerrar cámara</button>}
+            </div>
+            <p className={`pos-scanner-message${scanTone === "success" ? " is-success" : scanTone === "warning" ? " is-warning" : scanTone === "error" ? " is-error" : ""}`}>{scanMessage}</p>
+            {cameraOpen && (
+              <div className="pos-camera-panel">
+                <video ref={videoRef} muted playsInline />
+                <div className="pos-camera-guide" aria-hidden="true" />
+              </div>
+            )}
+          </div>
+
           <div className="pos-toolbar pos-toolbar-single">
             <label>
               Buscar producto
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nombre o categoría" autoFocus />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nombre o categoría" />
             </label>
           </div>
 
@@ -139,7 +356,7 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
 
           <div className="pos-cart-heading">
             <div><span className="admin-kicker">Caja</span><h2>Venta actual</h2></div>
-            {cart.length > 0 && <button type="button" className="pos-clear-button" onClick={() => setCart([])}>Vaciar</button>}
+            {cart.length > 0 && <button type="button" className="pos-clear-button" onClick={() => replaceCart([])}>Vaciar</button>}
           </div>
 
           <div className="pos-cart-lines">
