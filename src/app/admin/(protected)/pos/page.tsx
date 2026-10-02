@@ -1,13 +1,10 @@
 import Link from "next/link";
 import { PosCashMovementType, PosPaymentMethod, PosShiftStatus } from "@prisma/client";
 import { PosTerminal } from "@/components/admin/pos-terminal";
-import {
-  addPosCashMovement,
-  closePosShift,
-  openPosShift,
-} from "@/app/admin/pos-management-actions";
+import { addPosCashMovement, closePosShift, openPosShift } from "@/app/admin/pos-management-actions";
 import { formatClp } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { roundQuantity, toQuantityNumber } from "@/lib/quantity";
 
 export const dynamic = "force-dynamic";
 
@@ -22,11 +19,7 @@ const paymentLabels: Record<PosPaymentMethod, string> = {
 export default async function AdminPosPage({ searchParams }: { searchParams: Promise<{ ok?: string; error?: string; sale?: string; shift?: string }> }) {
   const query = await searchParams;
   const [registers, users, openShifts, recentSales, customers] = await Promise.all([
-    prisma.cashRegister.findMany({
-      where: { active: true, warehouse: { active: true } },
-      include: { warehouse: true },
-      orderBy: { name: "asc" },
-    }),
+    prisma.cashRegister.findMany({ where: { active: true, warehouse: { active: true } }, include: { warehouse: true }, orderBy: { name: "asc" } }),
     prisma.posUser.findMany({ where: { active: true }, orderBy: { name: "asc" } }),
     prisma.posShift.findMany({
       where: { status: PosShiftStatus.OPEN },
@@ -55,10 +48,7 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
             include: {
               warehouse: {
                 include: {
-                  stocks: {
-                    where: { product: { active: true } },
-                    include: { product: true },
-                  },
+                  stocks: { where: { product: { active: true } }, include: { product: true } },
                 },
               },
             },
@@ -69,15 +59,9 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
       })
     : null;
 
-  const cashSales = selectedShift?.sales
-    .filter((sale) => sale.paymentMethod === PosPaymentMethod.CASH)
-    .reduce((sum, sale) => sum + sale.total, 0) ?? 0;
-  const cashIn = selectedShift?.cashMovements
-    .filter((movement) => movement.type === PosCashMovementType.CASH_IN)
-    .reduce((sum, movement) => sum + movement.amount, 0) ?? 0;
-  const cashOut = selectedShift?.cashMovements
-    .filter((movement) => movement.type === PosCashMovementType.CASH_OUT)
-    .reduce((sum, movement) => sum + movement.amount, 0) ?? 0;
+  const cashSales = selectedShift?.sales.filter((sale) => sale.paymentMethod === PosPaymentMethod.CASH).reduce((sum, sale) => sum + sale.total, 0) ?? 0;
+  const cashIn = selectedShift?.cashMovements.filter((movement) => movement.type === PosCashMovementType.CASH_IN).reduce((sum, movement) => sum + movement.amount, 0) ?? 0;
+  const cashOut = selectedShift?.cashMovements.filter((movement) => movement.type === PosCashMovementType.CASH_OUT).reduce((sum, movement) => sum + movement.amount, 0) ?? 0;
   const expectedCash = selectedShift ? selectedShift.openingAmount + cashSales + cashIn - cashOut : 0;
 
   const products = selectedShift?.register.warehouse.stocks
@@ -88,7 +72,7 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
       imageUrl: stock.product.imageUrl,
       price: stock.product.price,
       unit: stock.product.unit,
-      available: Math.max(0, stock.onHand - stock.reserved),
+      available: roundQuantity(Math.max(0, toQuantityNumber(stock.onHand) - toQuantityNumber(stock.reserved))),
     }))
     .sort((left, right) => left.name.localeCompare(right.name, "es")) ?? [];
 
@@ -98,11 +82,7 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
   return (
     <div className="admin-content pos-page pos-admin-page">
       <div className="admin-title-row">
-        <div>
-          <span className="admin-kicker">Venta presencial</span>
-          <h1>Punto de venta</h1>
-          <p>Múltiples cajas y cajeros con apertura, cierre, arqueo, clientes e inventario por bodega.</p>
-        </div>
+        <div><span className="admin-kicker">Venta presencial</span><h1>Punto de venta</h1><p>Múltiples cajas y cajeros con apertura, cierre, arqueo, clientes e inventario por bodega.</p></div>
         <div className="pos-page-actions">
           <Link className="admin-button admin-button-secondary" href="/admin/pos/cajas">Cajas</Link>
           <Link className="admin-button admin-button-secondary" href="/admin/pos/configuracion">Usuarios POS</Link>
@@ -134,16 +114,11 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
       <section className="pos-active-shifts">
         <div className="admin-card-heading"><div><h2>Cajas abiertas</h2><p>{openShifts.length} turno(s) activo(s).</p></div></div>
         {openShifts.length === 0 && <div className="admin-card pos-empty">No hay cajas abiertas.</div>}
-        <div className="pos-shift-cards">
-          {openShifts.map((shift) => (
-            <Link href={`/admin/pos?shift=${shift.id}`} key={shift.id} className={`pos-shift-card${selectedShift?.id === shift.id ? " is-selected" : ""}`}>
-              <span>{shift.register.code}</span>
-              <strong>{shift.register.name}</strong>
-              <small>{shift.user.name} · {shift.register.warehouse.name}</small>
-              <small>Abierta {shift.openedAt.toLocaleString("es-CL")} · {shift._count.sales} ventas</small>
-            </Link>
-          ))}
-        </div>
+        <div className="pos-shift-cards">{openShifts.map((shift) => (
+          <Link href={`/admin/pos?shift=${shift.id}`} key={shift.id} className={`pos-shift-card${selectedShift?.id === shift.id ? " is-selected" : ""}`}>
+            <span>{shift.register.code}</span><strong>{shift.register.name}</strong><small>{shift.user.name} · {shift.register.warehouse.name}</small><small>Abierta {shift.openedAt.toLocaleString("es-CL")} · {shift._count.sales} ventas</small>
+          </Link>
+        ))}</div>
       </section>
 
       {selectedShift && <>
@@ -155,14 +130,7 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
           <div className="admin-stat"><strong>{formatClp(expectedCash)}</strong><span>efectivo esperado</span></div>
         </section>
 
-        <PosTerminal
-          shiftId={selectedShift.id}
-          registerName={`${selectedShift.register.code} · ${selectedShift.register.name}`}
-          cashierName={selectedShift.user.name}
-          warehouseName={selectedShift.register.warehouse.name}
-          products={products}
-          customers={customers}
-        />
+        <PosTerminal shiftId={selectedShift.id} registerName={`${selectedShift.register.code} · ${selectedShift.register.name}`} cashierName={selectedShift.user.name} warehouseName={selectedShift.register.warehouse.name} products={products} customers={customers} />
 
         <section className="admin-operation-grid pos-cash-controls">
           <div className="admin-card">
@@ -175,7 +143,6 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
               <button className="admin-button admin-button-secondary" type="submit">Registrar movimiento</button>
             </form>
           </div>
-
           <div className="admin-card pos-close-card">
             <div className="admin-card-heading"><div><h2>Cerrar y cuadrar caja</h2><p>Cuenta el efectivo físico. El sistema comparará contra {formatClp(expectedCash)} esperado.</p></div></div>
             <form action={closePosShift} className="admin-form">
@@ -196,26 +163,12 @@ export default async function AdminPosPage({ searchParams }: { searchParams: Pro
 
       <section className="admin-card pos-history">
         <div className="admin-card-heading"><div><h2>Ventas recientes</h2><p>Últimas 20 operaciones registradas en todas las cajas.</p></div></div>
-        <div className="admin-table-wrap">
-          <table className="admin-table">
-            <thead><tr><th>Fecha</th><th>N° venta</th><th>Caja</th><th>Cajero</th><th>Pago</th><th>Productos</th><th>Total</th><th></th></tr></thead>
-            <tbody>
-              {recentSales.length === 0 && <tr><td colSpan={8}>Aún no hay ventas POS.</td></tr>}
-              {recentSales.map((sale) => (
-                <tr key={sale.id}>
-                  <td>{sale.createdAt.toLocaleString("es-CL")}</td>
-                  <td><strong>{sale.saleNumber}</strong>{sale.customerName && <small>{sale.customerName}</small>}</td>
-                  <td>{sale.shift?.register.name ?? sale.warehouse.name}</td>
-                  <td>{sale.shift?.user.name ?? sale.cashier}</td>
-                  <td>{paymentLabels[sale.paymentMethod]}</td>
-                  <td>{sale._count.items}</td>
-                  <td><strong>{formatClp(sale.total)}</strong></td>
-                  <td><Link className="pos-receipt-link" href={`/admin/pos/ventas/${sale.id}`}>Comprobante</Link></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <div className="admin-table-wrap"><table className="admin-table">
+          <thead><tr><th>Fecha</th><th>N° venta</th><th>Caja</th><th>Cajero</th><th>Pago</th><th>Productos</th><th>Total</th><th></th></tr></thead>
+          <tbody>{recentSales.length === 0 && <tr><td colSpan={8}>Aún no hay ventas POS.</td></tr>}{recentSales.map((sale) => (
+            <tr key={sale.id}><td>{sale.createdAt.toLocaleString("es-CL")}</td><td><strong>{sale.saleNumber}</strong>{sale.customerName && <small>{sale.customerName}</small>}</td><td>{sale.shift?.register.name ?? sale.warehouse.name}</td><td>{sale.shift?.user.name ?? sale.cashier}</td><td>{paymentLabels[sale.paymentMethod]}</td><td>{sale._count.items}</td><td><strong>{formatClp(sale.total)}</strong></td><td><Link className="pos-receipt-link" href={`/admin/pos/ventas/${sale.id}`}>Comprobante</Link></td></tr>
+          ))}</tbody>
+        </table></div>
       </section>
     </div>
   );
