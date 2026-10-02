@@ -55,7 +55,7 @@ async function responseJson(response: Response): Promise<unknown> {
 export async function submitDteToSii(payload: SiiTransportPayload): Promise<SiiTransportResult> {
   const config = getSiiConfig();
 
-  if (config.environment === DteEnvironment.MOCK || config.provider === "mock") {
+  if (config.environment === DteEnvironment.MOCK) {
     return {
       status: DteStatus.ACCEPTED,
       trackId: `MOCK-${payload.typeCode}-${payload.folio}-${Date.now()}`,
@@ -112,7 +112,7 @@ export async function queryDteStatus(trackId: string): Promise<SiiTransportResul
   const config = getSiiConfig();
   if (!trackId) throw new Error("El documento no tiene Track ID para consultar.");
 
-  if (config.environment === DteEnvironment.MOCK || config.provider === "mock" || trackId.startsWith("MOCK-")) {
+  if (config.environment === DteEnvironment.MOCK) {
     return {
       status: DteStatus.ACCEPTED,
       trackId,
