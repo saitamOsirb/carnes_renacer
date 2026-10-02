@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { catalogProducts } from "@/data/catalog";
+import { calculateQuantitySubtotal, normalizeQuantity } from "@/lib/quantity";
 
 export type StoreProduct = {
   id: string;
@@ -40,16 +41,13 @@ const LEGACY_STORAGE_KEY = "renacer_cart_v1";
 const MAX_LINES = 30;
 const MAX_QUANTITY_PER_LINE = 25;
 
-const canonicalProducts: StoreProduct[] = catalogProducts.map((product) => ({
-  id: product.slug,
-  ...product,
-}));
+const canonicalProducts: StoreProduct[] = catalogProducts.map((product) => ({ id: product.slug, ...product }));
 const productById = new Map(canonicalProducts.map((product) => [product.id, product]));
 
 function clampQuantity(product: StoreProduct, value: unknown): number {
   const numeric = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(numeric)) return 0;
-  return Math.max(0, Math.min(Math.floor(numeric), MAX_QUANTITY_PER_LINE, product.stock));
+  return normalizeQuantity(numeric, product.unit, Math.min(MAX_QUANTITY_PER_LINE, product.stock));
 }
 
 function hydrateItems(value: unknown): CartItem[] {
@@ -58,16 +56,11 @@ function hydrateItems(value: unknown): CartItem[] {
     : value && typeof value === "object" && Array.isArray((value as Partial<PersistedCart>).items)
       ? (value as PersistedCart).items
       : [];
-
   const quantities = new Map<string, number>();
 
   for (const entry of rawItems.slice(0, MAX_LINES * 2)) {
     if (!entry || typeof entry !== "object") continue;
-    const candidate = entry as {
-      productId?: unknown;
-      quantity?: unknown;
-      product?: { id?: unknown; slug?: unknown };
-    };
+    const candidate = entry as { productId?: unknown; quantity?: unknown; product?: { id?: unknown; slug?: unknown } };
     const productId = typeof candidate.productId === "string"
       ? candidate.productId
       : typeof candidate.product?.id === "string"
@@ -77,22 +70,18 @@ function hydrateItems(value: unknown): CartItem[] {
           : "";
     const product = productById.get(productId);
     if (!product || product.stock <= 0) continue;
-
     const quantity = clampQuantity(product, candidate.quantity);
     if (quantity <= 0) continue;
     quantities.set(product.id, clampQuantity(product, (quantities.get(product.id) ?? 0) + quantity));
   }
 
-  return Array.from(quantities.entries())
-    .slice(0, MAX_LINES)
-    .map(([productId, quantity]) => ({ product: productById.get(productId)!, quantity }));
+  return Array.from(quantities.entries()).slice(0, MAX_LINES).map(([productId, quantity]) => ({ product: productById.get(productId)!, quantity }));
 }
 
 function readStoredCart(): CartItem[] {
   try {
     const current = window.localStorage.getItem(STORAGE_KEY);
     if (current) return hydrateItems(JSON.parse(current));
-
     const legacy = window.localStorage.getItem(LEGACY_STORAGE_KEY);
     if (legacy) return hydrateItems(JSON.parse(legacy));
   } catch {
@@ -102,16 +91,12 @@ function readStoredCart(): CartItem[] {
 }
 
 function persistCart(items: CartItem[]) {
-  const payload: PersistedCart = {
-    version: 2,
-    items: items.map(({ product, quantity }) => ({ productId: product.id, quantity })),
-  };
-
+  const payload: PersistedCart = { version: 2, items: items.map(({ product, quantity }) => ({ productId: product.id, quantity })) };
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     window.localStorage.removeItem(LEGACY_STORAGE_KEY);
   } catch {
-    // La navegación y el carrito en memoria siguen funcionando aunque el storage esté bloqueado.
+    // El carrito en memoria sigue funcionando aunque storage esté bloqueado.
   }
 }
 
@@ -119,29 +104,14 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<CartItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
-  useEffect(() => {
-    setItems(readStoredCart());
-    setHydrated(true);
-  }, []);
-
-  useEffect(() => {
-    if (hydrated) persistCart(items);
-  }, [items, hydrated]);
-
+  useEffect(() => { setItems(readStoredCart()); setHydrated(true); }, []);
+  useEffect(() => { if (hydrated) persistCart(items); }, [items, hydrated]);
   useEffect(() => {
     function syncAcrossTabs(event: StorageEvent) {
       if (event.key !== STORAGE_KEY) return;
-      if (!event.newValue) {
-        setItems([]);
-        return;
-      }
-      try {
-        setItems(hydrateItems(JSON.parse(event.newValue)));
-      } catch {
-        setItems([]);
-      }
+      if (!event.newValue) { setItems([]); return; }
+      try { setItems(hydrateItems(JSON.parse(event.newValue))); } catch { setItems([]); }
     }
-
     window.addEventListener("storage", syncAcrossTabs);
     return () => window.removeEventListener("storage", syncAcrossTabs);
   }, []);
@@ -149,16 +119,14 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const addItem = useCallback((incomingProduct: StoreProduct, requestedQuantity = 1) => {
     const product = productById.get(incomingProduct.id) ?? productById.get(incomingProduct.slug);
     if (!product || product.stock <= 0) return;
-
     setItems((current) => {
       const existing = current.find((item) => item.product.id === product.id);
-      const increment = Math.max(1, clampQuantity(product, requestedQuantity));
-
+      const increment = clampQuantity(product, requestedQuantity);
+      if (increment <= 0) return current;
       if (!existing) {
         if (current.length >= MAX_LINES) return current;
         return [...current, { product, quantity: increment }];
       }
-
       return current.map((item) => item.product.id === product.id
         ? { ...item, product, quantity: clampQuantity(product, item.quantity + increment) }
         : item);
@@ -175,16 +143,13 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
-  const removeItem = useCallback((productId: string) => {
-    setItems((current) => current.filter((item) => item.product.id !== productId));
-  }, []);
-
+  const removeItem = useCallback((productId: string) => setItems((current) => current.filter((item) => item.product.id !== productId)), []);
   const clearCart = useCallback(() => setItems([]), []);
 
   const value = useMemo<CartContextValue>(() => ({
     items,
-    itemCount: items.reduce((sum, item) => sum + item.quantity, 0),
-    subtotal: items.reduce((sum, item) => sum + item.product.price * item.quantity, 0),
+    itemCount: items.length,
+    subtotal: items.reduce((sum, item) => sum + calculateQuantitySubtotal(item.product.price, item.quantity), 0),
     hydrated,
     addItem,
     updateQuantity,
