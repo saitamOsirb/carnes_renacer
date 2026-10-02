@@ -1,5 +1,6 @@
 import "../../pos-management.css";
 import "../../pos-reports.css";
+import "../../pos-scanner.css";
 
 export default function PosLayout({ children }: { children: React.ReactNode }) {
   return children;
