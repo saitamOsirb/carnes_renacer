@@ -6,21 +6,24 @@ Renacer incluye un módulo administrativo en `/admin/facturacion` para:
 
 - Boleta electrónica tipo 39 desde ventas POS.
 - Factura electrónica tipo 33 desde ventas POS.
+- Guía de Despacho Electrónica tipo 52 desde `/admin/despachos`.
+- Nota de Crédito Electrónica tipo 61 desde devoluciones POS.
 - Folios separados por tipo y ambiente.
 - Cálculo y snapshot de neto, IVA y total.
 - XML de trabajo auditable por documento.
 - Estados DTE y bitácora de eventos.
 - Track ID del proveedor/SII.
-- Reintento de documentos en error antes de que sean aceptados.
+- Reintento de documentos en error antes de aceptación.
 - Consulta de estado.
 - Emisión automática opcional de boleta al cerrar una venta POS.
 - Representación administrativa imprimible.
+- Referencias entre DTE, por ejemplo NC 61 → boleta/factura original y Guía 52 → documento comercial cuando existe.
 
-Los modelos también contemplan tipos 61 (nota de crédito) y 56 (nota de débito), pero su flujo de emisión todavía no está expuesto en UI porque requiere reglas de referencia/anulación que deben validarse contra la especificación SII vigente.
+El modelo también contempla Nota de Débito tipo 56, pero su flujo operativo todavía no está implementado.
 
 ## Importante sobre producción
 
-El entorno de desarrollo de esta implementación no dispone de búsqueda web, por lo que NO se fijaron endpoints SII oficiales ni se asumieron contratos que pudieran haber cambiado. Antes de producción se debe contrastar el flujo con la documentación oficial vigente del SII y ejecutar el proceso de certificación correspondiente.
+El entorno de desarrollo de esta implementación no dispone de búsqueda web, por lo que NO se fijaron endpoints SII oficiales ni se asumió que un esquema tributario histórico siga vigente. Antes de producción se debe contrastar el flujo con la documentación oficial vigente del SII y ejecutar el proceso de certificación correspondiente.
 
 Por seguridad:
 
@@ -29,6 +32,7 @@ Por seguridad:
 - El modo `MOCK` jamás envía al SII.
 - Los endpoints se entregan por variables de entorno.
 - Los secretos nunca usan prefijo `NEXT_PUBLIC_`.
+- Fuera de `MOCK`, una Guía 52 se bloquea si no tiene RUT receptor o código de traslado / `IndTraslado`.
 
 ## Modos
 
@@ -40,7 +44,7 @@ SII_ENV=mock
 SII_PROVIDER=mock
 ```
 
-Genera folio, XML, evento y un Track ID simulado. Sirve para validar la operación de caja y facturación sin comunicación externa.
+Genera folio, XML, evento y Track ID simulado. Sirve para validar operación de caja, devoluciones y despachos sin comunicación externa.
 
 ### CERTIFICATION / PRODUCTION mediante gateway
 
@@ -53,9 +57,9 @@ SII_GATEWAY_STATUS_URL=https://tu-integrador.example/dte/status
 SII_GATEWAY_TOKEN=...
 ```
 
-En producción cambia únicamente `SII_ENV=production` después de completar certificación.
+En producción cambia `SII_ENV=production` únicamente después de completar certificación.
 
-El gateway puede ser un integrador comercial o un servicio propio. Debe encargarse de las operaciones oficiales de firma/timbre/envío exigidas por el SII y devolver el Track ID y estado.
+El gateway puede ser un integrador comercial o un servicio propio. Debe encargarse de las operaciones oficiales de firma, timbre, CAF y envío exigidas por el SII y devolver Track ID y estado.
 
 ## Contrato del gateway
 
@@ -88,11 +92,11 @@ Payload aproximado:
   },
   "document": {
     "documentId": "...",
-    "typeCode": 39,
+    "typeCode": 52,
     "folio": 1,
     "issueDate": "...",
     "issuerRut": "...",
-    "receiverRut": null,
+    "receiverRut": "...",
     "totalAmount": 12990,
     "xmlDraft": "<DTE ...>"
   }
@@ -147,7 +151,7 @@ SII_CIUDAD=
 SII_VAT_RATE=19
 ```
 
-La razón social, giro, ACTECO, dirección y comuna deben coincidir con los datos autorizados para la emisión tributaria.
+La razón social, giro, ACTECO, dirección y comuna deben coincidir con los datos autorizados para emisión tributaria.
 
 ## Certificado y CAF
 
@@ -158,11 +162,12 @@ SII_CERT_PFX_BASE64=
 SII_CERT_PASSWORD=
 SII_CAF_39_BASE64=
 SII_CAF_33_BASE64=
+SII_CAF_52_BASE64=
 SII_CAF_61_BASE64=
 SII_CAF_56_BASE64=
 ```
 
-Estas variables están preparadas para un adaptador directo o un gateway privado. La aplicación web no expone estos secretos al navegador.
+Estas variables están preparadas para un adaptador directo o gateway privado. La aplicación web no expone estos secretos al navegador.
 
 También se reservan endpoints directos, intencionalmente vacíos hasta verificarlos contra documentación oficial vigente:
 
@@ -173,7 +178,7 @@ SII_DTE_UPLOAD_URL=
 SII_DTE_STATUS_URL=
 ```
 
-El adaptador directo de firma XML/CAF no está habilitado en esta versión. Para certificación/producción usa `SII_PROVIDER=gateway` hasta implementar y validar ese protocolo contra el SII vigente.
+El adaptador directo de firma XML/CAF no está habilitado en esta versión. Para certificación/producción usa `SII_PROVIDER=gateway` hasta implementar y validar el protocolo directo contra el SII vigente.
 
 ## Emisión automática de boleta
 
@@ -189,18 +194,65 @@ La emisión DTE ocurre después de la transacción de venta. Si falla el proveed
 - el inventario NO vuelve a modificarse;
 - el DTE queda disponible en `/admin/facturacion` para diagnóstico/reintento.
 
-## Factura electrónica
+## Nota de Crédito 61
 
-La factura exige en la interfaz:
+Una devolución POS puede generar una NC 61 referenciada a la boleta 39 o factura 33 original. La devolución comercial, reposición de stock y movimiento de caja son independientes del envío tributario.
 
-- RUT receptor válido;
-- razón social;
-- giro;
-- dirección;
-- comuna;
-- ciudad opcional.
+Si el gateway falla al enviar la NC:
 
-Los datos se guardan como snapshot en el DTE para que una edición posterior del cliente no modifique el documento histórico.
+- la devolución NO se duplica ni revierte;
+- el stock NO se vuelve a modificar;
+- el documento queda para reintento.
+
+## Guía de Despacho Electrónica 52
+
+El módulo operativo está en:
+
+```text
+/admin/despachos
+```
+
+Permite crear:
+
+- despacho asociado a una venta POS;
+- traslado interno entre bodegas.
+
+El despacho guarda snapshot de:
+
+- origen y destino;
+- receptor, RUT, giro, dirección y comuna;
+- motivo y código de traslado / `IndTraslado`;
+- patente y remolque;
+- transportista;
+- conductor;
+- productos, cantidades/pesos y valores referenciales;
+- DTE comercial referenciado cuando existe.
+
+### Separación DTE vs inventario
+
+Emitir una Guía 52 **no mueve stock**.
+
+Para una venta POS, el stock ya fue descontado al registrar la venta; por lo tanto emitir o despachar la guía no vuelve a descontarlo.
+
+Para un traslado interno el ciclo es:
+
+```text
+DRAFT
+  ↓ emitir Guía 52
+READY
+  ↓ confirmar salida
+DISPATCHED / EN TRÁNSITO
+  ↓ confirmar recepción
+RECEIVED
+```
+
+Al confirmar salida se genera `TRANSFER_OUT` en la bodega origen. Al confirmar recepción se genera `TRANSFER_IN` en la bodega destino. La mercadería recibida queda como stock sin ubicación WMS hasta que se asigne físicamente a un rack/cámara.
+
+Las transiciones salida/recepción utilizan cambio de estado transaccional e idempotente para impedir que un doble clic duplique movimientos de inventario.
+
+### Producción SII
+
+El XML de trabajo incluye los datos de transporte y referencia necesarios para el adaptador/gateway, pero **no debe considerarse una certificación del esquema SII vigente**. Antes de producción hay que validar, entre otros, los códigos de traslado permitidos, reglas de receptor/transporte, CAF 52, timbre y esquema XML del ambiente oficial vigente.
 
 ## Folios
 
@@ -222,4 +274,4 @@ npm run db:generate
 npm run build
 ```
 
-No actives `SII_ENABLED=true` en producción hasta completar las pruebas de certificación y confirmar que el gateway/firma maneja correctamente CAF, XML firmado, timbre electrónico, envío y consulta de estados.
+No actives `SII_ENABLED=true` en producción hasta completar las pruebas de certificación y confirmar que el gateway/firma maneja correctamente CAF, XML firmado, timbre electrónico, envío, referencias y consulta de estados para cada tipo DTE utilizado.
