@@ -30,6 +30,7 @@ export type SiiConfig = {
     certificatePassword: string;
     caf39Base64: string;
     caf33Base64: string;
+    caf52Base64: string;
     caf61Base64: string;
     caf56Base64: string;
     seedUrl: string;
@@ -93,6 +94,7 @@ export function getSiiConfig(): SiiConfig {
       certificatePassword: env("SII_CERT_PASSWORD"),
       caf39Base64: env("SII_CAF_39_BASE64"),
       caf33Base64: env("SII_CAF_33_BASE64"),
+      caf52Base64: env("SII_CAF_52_BASE64"),
       caf61Base64: env("SII_CAF_61_BASE64"),
       caf56Base64: env("SII_CAF_56_BASE64"),
       seedUrl: env("SII_SEED_URL"),
