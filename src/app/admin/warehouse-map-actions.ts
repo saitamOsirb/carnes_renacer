@@ -4,8 +4,14 @@ import { Prisma, WarehouseLocationMovementType, WarehouseVisualObjectType } from
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/admin-auth";
-import { getLocatedWarehouseQuantity } from "@/lib/warehouse-location-service";
 import { prisma } from "@/lib/prisma";
+import {
+  formatQuantity,
+  isValidQuantityForUnit,
+  roundQuantity,
+  toQuantityNumber,
+} from "@/lib/quantity";
+import { getLocatedWarehouseQuantity } from "@/lib/warehouse-location-service";
 
 const MAX_OBJECTS = 180;
 const VALID_TYPES = new Set(Object.values(WarehouseVisualObjectType));
@@ -15,11 +21,13 @@ function text(formData: FormData, key: string, max = 500): string {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
-function integer(formData: FormData, key: string, min = 0, max = 100_000_000): number | null {
-  const raw = text(formData, key, 30);
+function decimalQuantity(formData: FormData, key: string, min = 0, max = 10_000_000): number | null {
+  const raw = text(formData, key, 30).replace(",", ".");
   if (!raw) return null;
   const value = Number(raw);
-  return Number.isInteger(value) && value >= min && value <= max ? value : null;
+  const rounded = roundQuantity(value);
+  if (!Number.isFinite(value) || Math.abs(value - rounded) > 1e-9 || rounded < min || rounded > max) return null;
+  return rounded;
 }
 
 function metersToCm(formData: FormData, key: string, minCm: number, maxCm: number): number | null {
@@ -105,17 +113,7 @@ function normalizeSceneObject(candidate: SceneObjectInput): NormalizedSceneObjec
   if (widthCm > 20_000 || depthCm > 20_000 || heightCm > 5_000) return null;
   if (![0, 90, 180, 270].includes(rotation)) return null;
 
-  return {
-    id,
-    type: typeRaw as WarehouseVisualObjectType,
-    label,
-    xCm,
-    zCm,
-    widthCm,
-    depthCm,
-    heightCm,
-    rotation,
-  };
+  return { id, type: typeRaw as WarehouseVisualObjectType, label, xCm, zCm, widthCm, depthCm, heightCm, rotation };
 }
 
 export async function saveWarehouseDimensions(formData: FormData): Promise<void> {
@@ -132,10 +130,7 @@ export async function saveWarehouseDimensions(formData: FormData): Promise<void>
   const warehouse = await prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { id: true, name: true } });
   if (!warehouse) redirect(mapUrl(warehouseId, "error", "Bodega no encontrada."));
 
-  const existing = await prisma.warehouseLayout.findUnique({
-    where: { warehouseId },
-    include: { objects: true },
-  });
+  const existing = await prisma.warehouseLayout.findUnique({ where: { warehouseId }, include: { objects: true } });
   if (existing) {
     const outside = existing.objects.find((object) => object.xCm + object.widthCm > widthCm || object.zCm + object.depthCm > depthCm || object.heightCm > heightCm);
     if (outside) redirect(mapUrl(warehouseId, "error", `El objeto ${outside.label} quedaría fuera de las nuevas dimensiones.`));
@@ -162,9 +157,7 @@ export async function saveWarehouseScene(formData: FormData): Promise<void> {
   }
 
   const normalized = parsed.map(normalizeSceneObject);
-  if (normalized.some((item) => item === null)) {
-    redirect(mapUrl(warehouseId, "error", "Uno o más objetos tienen medidas o datos inválidos."));
-  }
+  if (normalized.some((item) => item === null)) redirect(mapUrl(warehouseId, "error", "Uno o más objetos tienen medidas o datos inválidos."));
   const objects = normalized as NormalizedSceneObject[];
 
   const layout = await prisma.warehouseLayout.findUnique({
@@ -195,14 +188,15 @@ export async function saveWarehouseScene(formData: FormData): Promise<void> {
 
       for (const object of removedObjects) {
         for (const placement of object.placements) {
-          const locatedAfter = Math.max(0, (runningLocated.get(placement.productId) ?? 0) - placement.quantity);
+          const placementQuantity = toQuantityNumber(placement.quantity);
+          const locatedAfter = roundQuantity(Math.max(0, (runningLocated.get(placement.productId) ?? 0) - placementQuantity));
           runningLocated.set(placement.productId, locatedAfter);
           await tx.warehouseLocationMovement.create({
             data: {
               warehouseId,
               productId: placement.productId,
               type: WarehouseLocationMovementType.UNASSIGN,
-              quantity: -placement.quantity,
+              quantity: -placementQuantity,
               locatedAfter,
               fromObjectId: object.id,
               fromObjectLabel: object.label,
@@ -217,10 +211,7 @@ export async function saveWarehouseScene(formData: FormData): Promise<void> {
     }
 
     await tx.warehouseVisualObject.deleteMany({
-      where: {
-        layoutId: layout.id,
-        ...(retainedIds.length > 0 ? { id: { notIn: retainedIds } } : {}),
-      },
+      where: { layoutId: layout.id, ...(retainedIds.length > 0 ? { id: { notIn: retainedIds } } : {}) },
     });
 
     for (const object of objects) {
@@ -252,7 +243,7 @@ export async function assignWarehouseProduct(formData: FormData): Promise<void> 
   const productId = text(formData, "productId", 30);
   const objectId = text(formData, "objectId", 30);
   const locationCode = normalizeLocationCode(text(formData, "locationCode", 80));
-  const quantity = integer(formData, "quantity", 1, 10_000_000);
+  const quantity = decimalQuantity(formData, "quantity", 0.001);
 
   if (!warehouseId || !productId || !objectId || quantity === null) {
     redirect(mapUrl(warehouseId, "error", "Selecciona producto, ubicación y una cantidad válida."));
@@ -268,37 +259,32 @@ export async function assignWarehouseProduct(formData: FormData): Promise<void> 
         }),
         tx.inventoryStock.findUnique({
           where: { warehouseId_productId: { warehouseId, productId } },
-          include: { product: { select: { name: true } } },
+          include: { product: { select: { name: true, unit: true } } },
         }),
       ]);
       if (!object) throw new Error("INVALID_LOCATION");
       if (!stock) throw new Error("MISSING_STOCK");
+      if (!isValidQuantityForUnit(quantity, stock.product.unit, { max: 10_000_000 })) throw new Error("INVALID_QUANTITY");
 
       const located = await getLocatedWarehouseQuantity(tx, warehouseId, productId);
-      const unlocated = Math.max(0, stock.onHand - located);
+      const unlocated = roundQuantity(Math.max(0, toQuantityNumber(stock.onHand) - located));
       if (quantity > unlocated) throw new Error("OVER_ALLOCATE");
 
-      const existing = await tx.warehouseProductPlacement.findFirst({
-        where: { warehouseId, productId, objectId, locationCode },
-      });
+      const existing = await tx.warehouseProductPlacement.findFirst({ where: { warehouseId, productId, objectId, locationCode } });
       if (existing) {
-        await tx.warehouseProductPlacement.update({
-          where: { id: existing.id },
-          data: { quantity: { increment: quantity } },
-        });
+        await tx.warehouseProductPlacement.update({ where: { id: existing.id }, data: { quantity: { increment: quantity } } });
       } else {
-        await tx.warehouseProductPlacement.create({
-          data: { warehouseId, productId, objectId, locationCode, quantity },
-        });
+        await tx.warehouseProductPlacement.create({ data: { warehouseId, productId, objectId, locationCode, quantity } });
       }
 
+      const locatedAfter = roundQuantity(located + quantity);
       await tx.warehouseLocationMovement.create({
         data: {
           warehouseId,
           productId,
           type: WarehouseLocationMovementType.ALLOCATE,
           quantity,
-          locatedAfter: located + quantity,
+          locatedAfter,
           toObjectId: object.id,
           toObjectLabel: object.label,
           toLocationCode: locationCode || null,
@@ -307,12 +293,13 @@ export async function assignWarehouseProduct(formData: FormData): Promise<void> 
         },
       });
 
-      return `${stock.product.name}: ${quantity} ubicados en ${object.label}${locationCode ? ` · ${locationCode}` : ""}.`;
+      return `${stock.product.name}: ${formatQuantity(quantity, stock.product.unit)} ubicados en ${object.label}${locationCode ? ` · ${locationCode}` : ""}.`;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   } catch (error) {
     if (error instanceof Error && error.message === "INVALID_LOCATION") redirect(mapUrl(warehouseId, "error", "La ubicación seleccionada no pertenece a esta bodega."));
     if (error instanceof Error && error.message === "MISSING_STOCK") redirect(mapUrl(warehouseId, "error", "Ese producto todavía no tiene inventario en esta bodega."));
     if (error instanceof Error && error.message === "OVER_ALLOCATE") redirect(mapUrl(warehouseId, "error", "La cantidad supera el stock físico que queda sin ubicar."));
+    if (error instanceof Error && error.message === "INVALID_QUANTITY") redirect(mapUrl(warehouseId, "error", "La cantidad no corresponde a la unidad de medida del producto."));
     throw error;
   }
 
@@ -326,7 +313,7 @@ export async function moveWarehouseLocationStock(formData: FormData): Promise<vo
   const sourcePlacementId = text(formData, "sourcePlacementId", 30);
   const targetObjectId = text(formData, "targetObjectId", 30);
   const targetLocationCode = normalizeLocationCode(text(formData, "targetLocationCode", 80));
-  const quantity = integer(formData, "quantity", 1, 10_000_000);
+  const quantity = decimalQuantity(formData, "quantity", 0.001);
   const note = text(formData, "note", 500);
 
   if (!warehouseId || !sourcePlacementId || !targetObjectId || quantity === null) {
@@ -339,7 +326,7 @@ export async function moveWarehouseLocationStock(formData: FormData): Promise<vo
       const [source, targetObject] = await Promise.all([
         tx.warehouseProductPlacement.findUnique({
           where: { id: sourcePlacementId },
-          include: { object: true, product: { select: { name: true } } },
+          include: { object: true, product: { select: { name: true, unit: true } } },
         }),
         tx.warehouseVisualObject.findFirst({
           where: { id: targetObjectId, layout: { warehouseId } },
@@ -348,42 +335,29 @@ export async function moveWarehouseLocationStock(formData: FormData): Promise<vo
       ]);
       if (!source || source.warehouseId !== warehouseId) throw new Error("INVALID_SOURCE");
       if (!targetObject) throw new Error("INVALID_TARGET");
-      if (quantity > source.quantity) throw new Error("INSUFFICIENT_LOCATION_STOCK");
+      if (!isValidQuantityForUnit(quantity, source.product.unit, { max: 10_000_000 })) throw new Error("INVALID_QUANTITY");
+
+      const sourceQuantity = toQuantityNumber(source.quantity);
+      if (quantity > sourceQuantity) throw new Error("INSUFFICIENT_LOCATION_STOCK");
       if (source.objectId === targetObject.id && source.locationCode === targetLocationCode) throw new Error("SAME_LOCATION");
 
       const located = await getLocatedWarehouseQuantity(tx, warehouseId, source.productId);
       const target = await tx.warehouseProductPlacement.findFirst({
-        where: {
-          warehouseId,
-          productId: source.productId,
-          objectId: targetObject.id,
-          locationCode: targetLocationCode,
-        },
+        where: { warehouseId, productId: source.productId, objectId: targetObject.id, locationCode: targetLocationCode },
       });
 
-      if (quantity === source.quantity) {
+      const remaining = roundQuantity(sourceQuantity - quantity);
+      if (remaining <= 0) {
         await tx.warehouseProductPlacement.delete({ where: { id: source.id } });
       } else {
-        await tx.warehouseProductPlacement.update({
-          where: { id: source.id },
-          data: { quantity: { decrement: quantity } },
-        });
+        await tx.warehouseProductPlacement.update({ where: { id: source.id }, data: { quantity: remaining } });
       }
 
       if (target) {
-        await tx.warehouseProductPlacement.update({
-          where: { id: target.id },
-          data: { quantity: { increment: quantity } },
-        });
+        await tx.warehouseProductPlacement.update({ where: { id: target.id }, data: { quantity: { increment: quantity } } });
       } else {
         await tx.warehouseProductPlacement.create({
-          data: {
-            warehouseId,
-            productId: source.productId,
-            objectId: targetObject.id,
-            locationCode: targetLocationCode,
-            quantity,
-          },
+          data: { warehouseId, productId: source.productId, objectId: targetObject.id, locationCode: targetLocationCode, quantity },
         });
       }
 
@@ -405,13 +379,14 @@ export async function moveWarehouseLocationStock(formData: FormData): Promise<vo
         },
       });
 
-      return `${source.product.name}: ${quantity} movidos de ${source.object.label} a ${targetObject.label}.`;
+      return `${source.product.name}: ${formatQuantity(quantity, source.product.unit)} movidos de ${source.object.label} a ${targetObject.label}.`;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   } catch (error) {
     if (error instanceof Error && error.message === "INVALID_SOURCE") redirect(mapUrl(warehouseId, "error", "La ubicación de origen ya no existe."));
     if (error instanceof Error && error.message === "INVALID_TARGET") redirect(mapUrl(warehouseId, "error", "La ubicación de destino no pertenece a esta bodega."));
     if (error instanceof Error && error.message === "INSUFFICIENT_LOCATION_STOCK") redirect(mapUrl(warehouseId, "error", "La ubicación de origen no contiene esa cantidad."));
     if (error instanceof Error && error.message === "SAME_LOCATION") redirect(mapUrl(warehouseId, "error", "Origen y destino son la misma ubicación."));
+    if (error instanceof Error && error.message === "INVALID_QUANTITY") redirect(mapUrl(warehouseId, "error", "La cantidad no corresponde a la unidad de medida del producto."));
     throw error;
   }
 
@@ -423,7 +398,7 @@ export async function adjustWarehouseProductPlacementQuantity(formData: FormData
   await requireAdmin();
   const warehouseId = text(formData, "warehouseId", 30);
   const placementId = text(formData, "placementId", 30);
-  const newQuantity = integer(formData, "newQuantity", 0, 10_000_000);
+  const newQuantity = decimalQuantity(formData, "newQuantity", 0);
   const note = text(formData, "note", 500);
 
   if (!warehouseId || !placementId || newQuantity === null) {
@@ -435,21 +410,23 @@ export async function adjustWarehouseProductPlacementQuantity(formData: FormData
     message = await prisma.$transaction(async (tx) => {
       const placement = await tx.warehouseProductPlacement.findUnique({
         where: { id: placementId },
-        include: { object: true, product: { select: { name: true } } },
+        include: { object: true, product: { select: { name: true, unit: true } } },
       });
       if (!placement || placement.warehouseId !== warehouseId) throw new Error("INVALID_PLACEMENT");
+      if (!isValidQuantityForUnit(newQuantity, placement.product.unit, { allowZero: true, max: 10_000_000 })) throw new Error("INVALID_QUANTITY");
 
       const stock = await tx.inventoryStock.findUnique({
         where: { warehouseId_productId: { warehouseId, productId: placement.productId } },
       });
       if (!stock) throw new Error("MISSING_STOCK");
 
+      const currentQuantity = toQuantityNumber(placement.quantity);
       const located = await getLocatedWarehouseQuantity(tx, warehouseId, placement.productId);
-      const locatedWithoutCurrent = located - placement.quantity;
-      const locatedAfter = locatedWithoutCurrent + newQuantity;
-      if (locatedAfter > stock.onHand) throw new Error("OVER_ALLOCATE");
+      const locatedWithoutCurrent = roundQuantity(located - currentQuantity);
+      const locatedAfter = roundQuantity(locatedWithoutCurrent + newQuantity);
+      if (locatedAfter > toQuantityNumber(stock.onHand)) throw new Error("OVER_ALLOCATE");
 
-      const delta = newQuantity - placement.quantity;
+      const delta = roundQuantity(newQuantity - currentQuantity);
       if (newQuantity === 0) {
         await tx.warehouseProductPlacement.delete({ where: { id: placement.id } });
       } else {
@@ -476,12 +453,13 @@ export async function adjustWarehouseProductPlacementQuantity(formData: FormData
         });
       }
 
-      return `${placement.product.name}: ubicación ajustada a ${newQuantity}.`;
+      return `${placement.product.name}: ubicación ajustada a ${formatQuantity(newQuantity, placement.product.unit)}.`;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   } catch (error) {
     if (error instanceof Error && error.message === "INVALID_PLACEMENT") redirect(mapUrl(warehouseId, "error", "La ubicación indicada ya no existe."));
     if (error instanceof Error && error.message === "MISSING_STOCK") redirect(mapUrl(warehouseId, "error", "No existe inventario para ese producto."));
     if (error instanceof Error && error.message === "OVER_ALLOCATE") redirect(mapUrl(warehouseId, "error", "El ajuste dejaría más stock ubicado que stock físico disponible."));
+    if (error instanceof Error && error.message === "INVALID_QUANTITY") redirect(mapUrl(warehouseId, "error", "La cantidad no corresponde a la unidad de medida del producto."));
     throw error;
   }
 
@@ -503,6 +481,7 @@ export async function removeWarehouseProductPlacement(formData: FormData): Promi
       });
       if (!placement || placement.warehouseId !== warehouseId) throw new Error("INVALID_PLACEMENT");
       const located = await getLocatedWarehouseQuantity(tx, warehouseId, placement.productId);
+      const placementQuantity = toQuantityNumber(placement.quantity);
 
       await tx.warehouseProductPlacement.delete({ where: { id: placement.id } });
       await tx.warehouseLocationMovement.create({
@@ -510,8 +489,8 @@ export async function removeWarehouseProductPlacement(formData: FormData): Promi
           warehouseId,
           productId: placement.productId,
           type: WarehouseLocationMovementType.UNASSIGN,
-          quantity: -placement.quantity,
-          locatedAfter: Math.max(0, located - placement.quantity),
+          quantity: -placementQuantity,
+          locatedAfter: roundQuantity(Math.max(0, located - placementQuantity)),
           fromObjectId: placement.objectId,
           fromObjectLabel: placement.object.label,
           fromLocationCode: placement.locationCode || null,
