@@ -40,10 +40,20 @@ type PosTerminalProps = {
 
 type CartLine = { productId: string; quantity: number };
 type ScanTone = "idle" | "success" | "warning" | "error";
+type AddSource = "manual" | "scanner" | "scale";
 type DetectedBarcode = { rawValue: string };
 type BarcodeDetectorLike = { detect(source: CanvasImageSource): Promise<DetectedBarcode[]> };
 type BarcodeDetectorConstructor = new () => BarcodeDetectorLike;
-type ResolverResponse = { productId?: string; barcode?: string; error?: string };
+type ResolverResponse = {
+  productId?: string;
+  barcode?: string;
+  source?: "BARCODE" | "SCALE";
+  scaleMode?: "WEIGHT" | "PRICE";
+  plu?: string;
+  quantity?: number;
+  encodedAmount?: number | null;
+  error?: string;
+};
 
 function unitLabel(unit: PosProduct["unit"]): string {
   return unit === "KG" ? "kg" : "un.";
@@ -71,7 +81,7 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
   const [amountReceived, setAmountReceived] = useState("");
   const [customerId, setCustomerId] = useState("");
   const [barcodeInput, setBarcodeInput] = useState("");
-  const [scanMessage, setScanMessage] = useState("Lector listo. Escanea un código y presiona Enter.");
+  const [scanMessage, setScanMessage] = useState("Lector listo. Escanea un código o una etiqueta de balanza y presiona Enter.");
   const [scanTone, setScanTone] = useState<ScanTone>("idle");
   const [cameraSupported, setCameraSupported] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -126,33 +136,57 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
     setCart(next);
   }
 
-  function addProduct(product: PosProduct, source: "manual" | "scanner" = "manual", barcode = "") {
+  function addProduct(
+    product: PosProduct,
+    source: AddSource = "manual",
+    barcode = "",
+    requestedQuantity?: number,
+    scaleMode?: "WEIGHT" | "PRICE",
+    encodedAmount?: number | null,
+  ) {
     if (product.available <= 0) {
-      if (source === "scanner") {
+      if (source !== "manual") {
         setScanTone("error");
         setScanMessage(`${product.name}: sin stock disponible en ${warehouseName}.`);
       }
       return;
     }
 
-    const increment = initialQuantity(product);
-    if (increment <= 0) return;
-    const current = cartRef.current;
-    const found = current.find((line) => line.productId === product.id);
-    const nextQuantity = normalizeQuantity((found?.quantity ?? 0) + increment, product.unit, product.available);
-    if (found && nextQuantity <= found.quantity) {
-      if (source === "scanner") {
-        setScanTone("warning");
-        setScanMessage(`${product.name}: ya alcanzaste el máximo disponible (${formatQuantity(product.available, product.unit)}).`);
+    const increment = requestedQuantity === undefined
+      ? initialQuantity(product)
+      : normalizeQuantity(requestedQuantity, product.unit, product.available);
+    if (increment <= 0) {
+      if (source !== "manual") {
+        setScanTone("error");
+        setScanMessage(`${product.name}: la etiqueta contiene una cantidad inválida.`);
       }
       return;
     }
 
+    const current = cartRef.current;
+    const found = current.find((line) => line.productId === product.id);
+    const currentQuantity = found?.quantity ?? 0;
+    const desiredQuantity = roundQuantity(currentQuantity + increment);
+    if (desiredQuantity > product.available + 0.000001) {
+      if (source !== "manual") {
+        setScanTone("warning");
+        setScanMessage(`${product.name}: ${formatQuantity(increment, product.unit)} adicionales superarían el disponible (${formatQuantity(product.available, product.unit)}).`);
+      }
+      return;
+    }
+
+    const nextQuantity = normalizeQuantity(desiredQuantity, product.unit, product.available);
     replaceCart(found
       ? current.map((line) => line.productId === product.id ? { ...line, quantity: nextQuantity } : line)
       : [...current, { productId: product.id, quantity: increment }]);
 
-    if (source === "scanner") {
+    if (source === "scale") {
+      const priceDetail = scaleMode === "PRICE" && encodedAmount
+        ? ` · importe etiqueta ${formatClp(encodedAmount)}`
+        : "";
+      setScanTone("success");
+      setScanMessage(`Balanza · ${product.name}: ${formatQuantity(increment, "KG")} agregados${priceDetail}. Total en carrito: ${formatQuantity(nextQuantity, "KG")}.`);
+    } else if (source === "scanner") {
       setScanTone("success");
       setScanMessage(`${barcode ? `${barcode} · ` : ""}${product.name} agregado. Cantidad: ${formatQuantity(nextQuantity, product.unit)}.`);
     }
@@ -203,13 +237,24 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
         setScanMessage(payload.error === "Código no registrado." ? `Código ${code} no registrado.` : (payload.error ?? `No fue posible resolver ${code}.`));
         return;
       }
+
       const product = productMap.get(payload.productId);
       if (!product) {
         setScanTone("warning");
         setScanMessage(`Código ${code} válido, pero el producto no está disponible en ${warehouseName}.`);
         return;
       }
-      addProduct(product, "scanner", code);
+
+      if (payload.source === "SCALE") {
+        if (product.unit !== "KG" || typeof payload.quantity !== "number" || payload.quantity <= 0) {
+          setScanTone("error");
+          setScanMessage("La etiqueta de balanza no contiene un peso válido para este producto.");
+          return;
+        }
+        addProduct(product, "scale", code, payload.quantity, payload.scaleMode, payload.encodedAmount);
+      } else {
+        addProduct(product, "scanner", code);
+      }
       if (source === "cámara") stopCamera();
     } catch {
       setScanTone("error");
@@ -253,7 +298,7 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
       video.srcObject = stream;
       await video.play();
       const detector = new detectorCtor();
-      setScanMessage("Apunta la cámara al código de barras.");
+      setScanMessage("Apunta la cámara al código de barras o etiqueta de balanza.");
       const scan = async () => {
         if (!mediaStreamRef.current || !videoRef.current) return;
         if (video.readyState >= 2 && !detectBusyRef.current && !resolveBusyRef.current) {
@@ -293,16 +338,17 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
       <div className="pos-shell">
         <section className="pos-catalog-panel">
           <div className="pos-scanner-panel">
-            <label className="pos-scanner-field">Escanear código <small>F8 vuelve a enfocar el lector</small>
+            <label className="pos-scanner-field">Escanear código o balanza <small>F8 vuelve a enfocar el lector</small>
               <span className="pos-scanner-input-wrap">
                 <input ref={barcodeRef} value={barcodeInput} onChange={(event) => setBarcodeInput(event.target.value)} onKeyDown={(event) => {
                   if (event.key === "Enter") { event.preventDefault(); void resolveBarcode(barcodeInput, "lector"); }
-                }} placeholder="Escanea o escribe el código y presiona Enter" autoComplete="off" autoFocus />
+                }} placeholder="Código normal o etiqueta EAN-13 de balanza" autoComplete="off" autoFocus />
               </span>
             </label>
             <div className="pos-scanner-actions">
               {cameraSupported && !cameraOpen && <button type="button" className="admin-button admin-button-secondary" onClick={() => void startCamera()}>Usar cámara</button>}
               {cameraOpen && <button type="button" className="admin-button admin-button-secondary" onClick={stopCamera}>Cerrar cámara</button>}
+              <a className="admin-button admin-button-secondary" href="/admin/pos/balanza">Configurar balanza</a>
             </div>
             <p className={`pos-scanner-message${scanTone === "success" ? " is-success" : scanTone === "warning" ? " is-warning" : scanTone === "error" ? " is-error" : ""}`}>{scanMessage}</p>
             {cameraOpen && <div className="pos-camera-panel"><video ref={videoRef} muted playsInline /><div className="pos-camera-guide" aria-hidden="true" /></div>}
@@ -387,7 +433,7 @@ export function PosTerminal({ shiftId, registerName, cashierName, warehouseName,
           </div>
           {paymentMethod === "CASH" && <div className={`pos-change-box${cashInsufficient ? " is-warning" : ""}`}><span>Vuelto</span><strong>{formatClp(change)}</strong></div>}
           <button className="admin-button admin-button-primary pos-pay-button" type="submit" disabled={cart.length === 0 || total <= 0 || cashInsufficient}>Registrar venta</button>
-          <small className="pos-sale-note">Los productos por kg admiten precisión de 0,001 kg. La venta descuenta inventario de {warehouseName}.</small>
+          <small className="pos-sale-note">Los productos por kg admiten precisión de 0,001 kg. Las etiquetas de balanza agregan automáticamente el peso escaneado y la venta descuenta inventario de {warehouseName}.</small>
         </form>
       </div>
     </div>
