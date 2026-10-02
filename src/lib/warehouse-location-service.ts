@@ -1,6 +1,7 @@
 import "server-only";
 
 import { Prisma, WarehouseLocationMovementType } from "@prisma/client";
+import { roundQuantity, toQuantityNumber } from "@/lib/quantity";
 
 type InventoryTx = Prisma.TransactionClient;
 
@@ -23,7 +24,7 @@ export async function getLocatedWarehouseQuantity(
     where: { warehouseId, productId },
     _sum: { quantity: true },
   });
-  return aggregate._sum.quantity ?? 0;
+  return roundQuantity(toQuantityNumber(aggregate._sum.quantity));
 }
 
 export async function reconcileWarehouseLocationStock(
@@ -39,16 +40,17 @@ export async function reconcileWarehouseLocationStock(
     orderBy: [{ updatedAt: "asc" }, { createdAt: "asc" }],
   });
 
-  let located = placements.reduce((sum, placement) => sum + placement.quantity, 0);
-  let excess = Math.max(0, located - Math.max(0, physicalOnHand));
+  let located = roundQuantity(placements.reduce((sum, placement) => sum + toQuantityNumber(placement.quantity), 0));
+  let excess = roundQuantity(Math.max(0, located - Math.max(0, physicalOnHand)));
   if (excess <= 0) return;
 
   for (const placement of placements) {
     if (excess <= 0) break;
-    const quantity = Math.min(excess, placement.quantity);
-    const remaining = placement.quantity - quantity;
+    const placementQuantity = toQuantityNumber(placement.quantity);
+    const quantity = roundQuantity(Math.min(excess, placementQuantity));
+    const remaining = roundQuantity(placementQuantity - quantity);
 
-    if (remaining === 0) {
+    if (remaining <= 0) {
       await tx.warehouseProductPlacement.delete({ where: { id: placement.id } });
     } else {
       await tx.warehouseProductPlacement.update({
@@ -57,8 +59,8 @@ export async function reconcileWarehouseLocationStock(
       });
     }
 
-    located -= quantity;
-    excess -= quantity;
+    located = roundQuantity(located - quantity);
+    excess = roundQuantity(excess - quantity);
 
     await tx.warehouseLocationMovement.create({
       data: {
