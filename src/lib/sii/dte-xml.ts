@@ -19,6 +19,17 @@ export type DteXmlReference = {
   reason: string;
 };
 
+export type DteXmlDispatch = {
+  transferReasonCode?: string | null;
+  destinationAddress: string;
+  destinationCommune: string;
+  destinationCity?: string | null;
+  vehiclePlate?: string | null;
+  carrierRut?: string | null;
+  driverRut?: string | null;
+  driverName?: string | null;
+};
+
 export type DteXmlSnapshot = {
   id: string;
   typeCode: number;
@@ -49,6 +60,7 @@ export type DteXmlSnapshot = {
   totalAmount: number;
   lines: DteXmlLine[];
   references?: DteXmlReference[];
+  dispatch?: DteXmlDispatch | null;
 };
 
 function xml(value: string | number | null | undefined): string {
@@ -79,6 +91,22 @@ function receiverXml(snapshot: DteXmlSnapshot): string {
     receiver.commune ? `<CmnaRecep>${xml(receiver.commune)}</CmnaRecep>` : "",
     receiver.city ? `<CiudadRecep>${xml(receiver.city)}</CiudadRecep>` : "",
     "</Receptor>",
+  ].filter(Boolean).join("");
+}
+
+function transportXml(snapshot: DteXmlSnapshot): string {
+  const dispatch = snapshot.dispatch;
+  if (!dispatch) return "";
+  return [
+    "<Transporte>",
+    dispatch.vehiclePlate ? `<Patente>${xml(dispatch.vehiclePlate)}</Patente>` : "",
+    dispatch.carrierRut ? `<RUTTrans>${xml(dispatch.carrierRut)}</RUTTrans>` : "",
+    dispatch.driverRut ? `<RUTChofer>${xml(dispatch.driverRut)}</RUTChofer>` : "",
+    dispatch.driverName ? `<NombreChofer>${xml(dispatch.driverName)}</NombreChofer>` : "",
+    `<DirDest>${xml(dispatch.destinationAddress)}</DirDest>`,
+    `<CmnaDest>${xml(dispatch.destinationCommune)}</CmnaDest>`,
+    dispatch.destinationCity ? `<CiudadDest>${xml(dispatch.destinationCity)}</CiudadDest>` : "",
+    "</Transporte>",
   ].filter(Boolean).join("");
 }
 
@@ -122,6 +150,9 @@ export function buildDteXmlDraft(snapshot: DteXmlSnapshot): string {
     `<Folio>${snapshot.folio}</Folio>`,
     `<FchEmis>${dateOnly(snapshot.issueDate)}</FchEmis>`,
     snapshot.typeCode === 39 ? "<MntBruto>1</MntBruto>" : "",
+    snapshot.typeCode === 52 && snapshot.dispatch?.transferReasonCode
+      ? `<IndTraslado>${xml(snapshot.dispatch.transferReasonCode)}</IndTraslado>`
+      : "",
     "</IdDoc>",
     "<Emisor>",
     `<RUTEmisor>${xml(snapshot.issuer.rut)}</RUTEmisor>`,
@@ -140,6 +171,7 @@ export function buildDteXmlDraft(snapshot: DteXmlSnapshot): string {
     `<IVA>${snapshot.vatAmount}</IVA>`,
     `<MntTotal>${snapshot.totalAmount}</MntTotal>`,
     "</Totales>",
+    transportXml(snapshot),
     "</Encabezado>",
     detail,
     referencesXml(snapshot),
