@@ -137,6 +137,20 @@ enum DispatchStatus {
   CANCELLED
 }
 
+enum PurchaseOrderStatus {
+  ORDERED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+enum PurchaseReceiptDocumentType {
+  GUIA_DESPACHO
+  FACTURA
+  BOLETA
+  OTRO
+}
+
 model Product {
   id                         String                      @id @default(cuid()) @db.VarChar(30)
   slug                       String                      @unique @db.VarChar(191)
@@ -158,6 +172,8 @@ model Product {
   posSaleItems               PosSaleItem[]
   posReturnItems             PosReturnItem[]
   dispatchItems              DispatchItem[]
+  purchaseOrderItems         PurchaseOrderItem[]
+  purchaseReceiptItems       PurchaseReceiptItem[]
   warehousePlacements        WarehouseProductPlacement[]
   warehouseLocationMovements WarehouseLocationMovement[]
 
@@ -194,6 +210,7 @@ model Warehouse {
   posReturns                 PosReturn[]
   dispatchesFrom             Dispatch[]                  @relation("DispatchSourceWarehouse")
   dispatchesTo               Dispatch[]                  @relation("DispatchDestinationWarehouse")
+  purchaseOrders             PurchaseOrder[]
   cashRegisters              CashRegister[]
   layout                     WarehouseLayout?
   productPlacements          WarehouseProductPlacement[]
@@ -589,6 +606,115 @@ model DispatchItem {
   @@index([productId])
 }
 
+model Supplier {
+  id               String          @id @default(cuid()) @db.VarChar(30)
+  code             String          @unique @db.VarChar(40)
+  rut              String?         @unique @db.VarChar(20)
+  name             String          @db.VarChar(191)
+  contactName      String?         @db.VarChar(191)
+  email            String?         @db.VarChar(191)
+  phone            String?         @db.VarChar(40)
+  address          String?         @db.VarChar(255)
+  commune          String?         @db.VarChar(120)
+  city             String?         @db.VarChar(120)
+  paymentTermsDays Int             @default(0)
+  notes            String?         @db.VarChar(1000)
+  active           Boolean         @default(true)
+  createdAt        DateTime        @default(now()) @db.DateTime(3)
+  updatedAt        DateTime        @updatedAt @db.DateTime(3)
+  purchaseOrders   PurchaseOrder[]
+
+  @@index([active, name])
+  @@index([email])
+}
+
+model PurchaseOrder {
+  id                String              @id @default(cuid()) @db.VarChar(30)
+  orderNumber       String              @unique @db.VarChar(40)
+  requestKey        String              @unique @db.VarChar(64)
+  supplierId        String              @db.VarChar(30)
+  warehouseId       String              @db.VarChar(30)
+  status            PurchaseOrderStatus @default(ORDERED)
+  expectedDate      DateTime?           @db.DateTime(3)
+  supplierReference String?             @db.VarChar(100)
+  vatRate           Int                 @default(19)
+  netAmount         Int
+  vatAmount         Int
+  totalAmount       Int
+  notes             String?             @db.VarChar(1000)
+  orderedAt         DateTime            @default(now()) @db.DateTime(3)
+  completedAt       DateTime?           @db.DateTime(3)
+  cancelledAt       DateTime?           @db.DateTime(3)
+  createdAt         DateTime            @default(now()) @db.DateTime(3)
+  updatedAt         DateTime            @updatedAt @db.DateTime(3)
+  supplier          Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  warehouse         Warehouse           @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  items             PurchaseOrderItem[]
+  receipts          PurchaseReceipt[]
+
+  @@index([supplierId, createdAt])
+  @@index([warehouseId, createdAt])
+  @@index([status, createdAt])
+}
+
+model PurchaseOrderItem {
+  id                String                @id @default(cuid()) @db.VarChar(30)
+  purchaseOrderId   String                @db.VarChar(30)
+  productId         String                @db.VarChar(30)
+  productName       String                @db.VarChar(191)
+  unit              UnitType
+  orderedQuantity   Decimal               @db.Decimal(14, 3)
+  receivedQuantity  Decimal               @default(0) @db.Decimal(14, 3)
+  unitCostNet       Int
+  netAmount         Int
+  createdAt         DateTime              @default(now()) @db.DateTime(3)
+  updatedAt         DateTime              @updatedAt @db.DateTime(3)
+  purchaseOrder     PurchaseOrder         @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product           Product               @relation(fields: [productId], references: [id], onDelete: Restrict)
+  receiptItems      PurchaseReceiptItem[]
+
+  @@unique([purchaseOrderId, productId])
+  @@index([productId])
+}
+
+model PurchaseReceipt {
+  id                     String                       @id @default(cuid()) @db.VarChar(30)
+  receiptNumber          String                       @unique @db.VarChar(40)
+  requestKey             String                       @unique @db.VarChar(64)
+  purchaseOrderId        String                       @db.VarChar(30)
+  documentType           PurchaseReceiptDocumentType?
+  supplierDocumentNumber String?                      @db.VarChar(100)
+  receivedBy             String                       @db.VarChar(80)
+  notes                  String?                      @db.VarChar(1000)
+  receivedAt             DateTime                     @default(now()) @db.DateTime(3)
+  createdAt              DateTime                     @default(now()) @db.DateTime(3)
+  purchaseOrder          PurchaseOrder                @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
+  items                  PurchaseReceiptItem[]
+
+  @@index([purchaseOrderId, receivedAt])
+  @@index([supplierDocumentNumber])
+}
+
+model PurchaseReceiptItem {
+  id                  String            @id @default(cuid()) @db.VarChar(30)
+  purchaseReceiptId   String            @db.VarChar(30)
+  purchaseOrderItemId String            @db.VarChar(30)
+  productId           String            @db.VarChar(30)
+  productName         String            @db.VarChar(191)
+  unit                UnitType
+  quantity            Decimal           @db.Decimal(14, 3)
+  unitCostNet         Int
+  netAmount           Int
+  createdAt           DateTime          @default(now()) @db.DateTime(3)
+  purchaseReceipt     PurchaseReceipt   @relation(fields: [purchaseReceiptId], references: [id], onDelete: Cascade)
+  purchaseOrderItem   PurchaseOrderItem @relation(fields: [purchaseOrderItemId], references: [id], onDelete: Restrict)
+  product             Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([purchaseReceiptId, purchaseOrderItemId])
+  @@index([purchaseOrderItemId])
+  @@index([productId])
+}
+
 model Order {
   id                 String         @id @default(cuid()) @db.VarChar(30)
   orderNumber        String         @unique @db.VarChar(40)
@@ -730,8 +856,8 @@ model DteDocument {
   createdAt        DateTime         @default(now()) @db.DateTime(3)
   updatedAt        DateTime         @updatedAt @db.DateTime(3)
   sale             PosSale?        @relation(fields: [saleId], references: [id], onDelete: Restrict)
-  posReturn        PosReturn?      @relation(fields: [returnId], references: [id], onDelete: Restrict)
-  dispatch         Dispatch?       @relation(fields: [dispatchId], references: [id], onDelete: Restrict)
+  posReturn        PosReturn?       @relation(fields: [returnId], references: [id], onDelete: Restrict)
+  dispatch         Dispatch?        @relation(fields: [dispatchId], references: [id], onDelete: Restrict)
   parent           DteDocument?     @relation("DteReferences", fields: [parentId], references: [id], onDelete: Restrict)
   references       DteDocument[]    @relation("DteReferences")
   events           DteEvent[]
