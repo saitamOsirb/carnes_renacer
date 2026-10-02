@@ -22,6 +22,7 @@ const statusLabel: Record<DteStatus, string> = {
 function typeShort(type: DteDocumentType): string {
   if (type === DteDocumentType.BOLETA_ELECTRONICA) return "Boleta 39";
   if (type === DteDocumentType.FACTURA_ELECTRONICA) return "Factura 33";
+  if (type === DteDocumentType.GUIA_DESPACHO) return "Guía 52";
   if (type === DteDocumentType.NOTA_CREDITO) return "NC 61";
   return "ND 56";
 }
@@ -49,6 +50,7 @@ export default async function BillingPage({
     prisma.dteDocument.findMany({
       include: {
         sale: { select: { id: true, saleNumber: true, customerName: true, total: true } },
+        dispatch: { select: { id: true, dispatchNumber: true } },
         _count: { select: { events: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -81,7 +83,7 @@ export default async function BillingPage({
         <div>
           <span className="admin-kicker">Chile · DTE</span>
           <h1>Facturación y boleta electrónica</h1>
-          <p>Emisión, folios, trazabilidad y estados SII para ventas del punto de venta.</p>
+          <p>Emisión, folios, trazabilidad y estados SII para ventas, devoluciones y despachos.</p>
         </div>
         <div className={`billing-environment is-${config.environment.toLowerCase()}`}>
           <span>Ambiente</span>
@@ -174,14 +176,14 @@ export default async function BillingPage({
         <div className="admin-card-heading"><div><h2>Historial DTE</h2><p>Últimos 100 documentos generados y su estado de integración.</p></div></div>
         <div className="admin-table-wrap">
           <table className="admin-table billing-table">
-            <thead><tr><th>Fecha</th><th>Documento</th><th>Venta</th><th>Receptor</th><th>Total</th><th>Estado</th><th>Track ID</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Fecha</th><th>Documento</th><th>Origen</th><th>Receptor</th><th>Total</th><th>Estado</th><th>Track ID</th><th>Acciones</th></tr></thead>
             <tbody>
               {recentDocuments.length === 0 && <tr><td colSpan={8}>Aún no hay documentos tributarios.</td></tr>}
               {recentDocuments.map((document) => (
                 <tr key={document.id}>
                   <td>{document.createdAt.toLocaleString("es-CL")}</td>
                   <td><Link href={`/admin/facturacion/${document.id}`}><strong>{typeShort(document.type)} · F{document.folio}</strong></Link><small>{document.environment} · {document._count.events} eventos</small></td>
-                  <td>{document.sale ? <Link href={`/admin/pos/ventas/${document.sale.id}`}>{document.sale.saleNumber}</Link> : "—"}</td>
+                  <td>{document.dispatch ? <Link href={`/admin/despachos/${document.dispatch.id}`}>{document.dispatch.dispatchNumber}</Link> : document.sale ? <Link href={`/admin/pos/ventas/${document.sale.id}`}>{document.sale.saleNumber}</Link> : "—"}</td>
                   <td>{document.receiverName ?? (document.typeCode === 39 ? "Consumidor final" : "—")}<small>{document.receiverRut ?? ""}</small></td>
                   <td><strong>{formatClp(document.totalAmount)}</strong></td>
                   <td><span className={`billing-status is-${document.status.toLowerCase()}`}>{statusLabel[document.status]}</span>{document.siiStatusCode && <small>{document.siiStatusCode}</small>}</td>
@@ -202,7 +204,7 @@ export default async function BillingPage({
 
       <div className="billing-legal-note">
         <strong>Alcance actual</strong>
-        <span>El módulo implementa boleta electrónica tipo 39 y factura electrónica tipo 33 para ventas afectas. Los datos normativos/endpoints del SII no están codificados de forma fija: se cargan por variables de entorno y deben validarse en certificación antes de activar producción.</span>
+        <span>El módulo implementa boleta 39, factura 33, guía de despacho 52 y nota de crédito 61 sobre el adaptador SII/gateway. Los códigos, esquemas y requisitos tributarios deben validarse en certificación vigente antes de activar producción.</span>
       </div>
     </div>
   );
