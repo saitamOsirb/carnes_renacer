@@ -1,0 +1,8 @@
+@media print {
+  .label-print-area.is-sheet {
+    display: flex !important;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: var(--label-gap) !important;
+  }
+}
