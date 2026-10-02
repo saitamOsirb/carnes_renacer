@@ -52,6 +52,16 @@ async function responseJson(response: Response): Promise<unknown> {
   }
 }
 
+function validateLivePayload(payload: SiiTransportPayload): void {
+  if (payload.typeCode !== 52) return;
+  if (!payload.receiverRut) {
+    throw new Error("La Guía de Despacho 52 requiere RUT receptor antes de enviarse fuera de MOCK.");
+  }
+  if (!/<IndTraslado>[^<]+<\/IndTraslado>/.test(payload.xmlDraft)) {
+    throw new Error("La Guía de Despacho 52 requiere código de traslado / IndTraslado antes de enviarse fuera de MOCK.");
+  }
+}
+
 export async function submitDteToSii(payload: SiiTransportPayload): Promise<SiiTransportResult> {
   const config = getSiiConfig();
 
@@ -66,6 +76,7 @@ export async function submitDteToSii(payload: SiiTransportPayload): Promise<SiiT
     };
   }
 
+  validateLivePayload(payload);
   assertSiiCanSubmit(config);
   const response = await fetch(config.gateway.submitUrl, {
     method: "POST",
