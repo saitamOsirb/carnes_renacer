@@ -29,6 +29,13 @@ export default async function DteDetailPage({ params }: { params: Promise<{ id: 
     include: {
       sale: { include: { items: { orderBy: { productName: "asc" } }, shift: { include: { register: true, user: true } } } },
       posReturn: { include: { items: { orderBy: { productName: "asc" } } } },
+      dispatch: {
+        include: {
+          items: { orderBy: { productName: "asc" } },
+          sourceWarehouse: true,
+          destinationWarehouse: true,
+        },
+      },
       events: { orderBy: { createdAt: "desc" } },
       parent: true,
       references: true,
@@ -38,13 +45,15 @@ export default async function DteDetailPage({ params }: { params: Promise<{ id: 
 
   const retryable = document.status === DteStatus.ERROR || document.status === DteStatus.GENERATED || document.status === DteStatus.QUEUED;
   const returnDocument = document.posReturn;
+  const dispatchDocument = document.dispatch;
 
   return (
     <div className="admin-content admin-content-narrow billing-detail-page">
       <div className="billing-detail-actions no-print">
         <Link href="/admin/facturacion" className="admin-button admin-button-secondary">← Facturación</Link>
         <div>
-          {document.saleId && <Link href={`/admin/pos/ventas/${document.saleId}`} className="admin-button admin-button-secondary">Ver venta</Link>}
+          {dispatchDocument && <Link href={`/admin/despachos/${dispatchDocument.id}`} className="admin-button admin-button-secondary">Ver despacho</Link>}
+          {document.saleId && !dispatchDocument && <Link href={`/admin/pos/ventas/${document.saleId}`} className="admin-button admin-button-secondary">Ver venta</Link>}
           {document.trackId && <form action={syncDteStatusAction}><input type="hidden" name="documentId" value={document.id} /><button className="admin-button admin-button-secondary" type="submit">Consultar estado SII</button></form>}
           {retryable && <form action={retryDteAction}><input type="hidden" name="documentId" value={document.id} /><button className="admin-button admin-button-secondary" type="submit">Reenviar</button></form>}
           <PrintButton />
@@ -59,6 +68,7 @@ export default async function DteDetailPage({ params }: { params: Promise<{ id: 
 
         <section className="billing-document-meta">
           <div><span>Fecha emisión</span><strong>{document.issueDate.toLocaleString("es-CL")}</strong></div>
+          {dispatchDocument && <div><span>Despacho</span><strong>{dispatchDocument.dispatchNumber}</strong></div>}
           <div><span>Venta origen</span><strong>{document.sale?.saleNumber ?? "Sin venta asociada"}</strong></div>
           {returnDocument && <div><span>Devolución</span><strong>{returnDocument.returnNumber}</strong></div>}
           {document.parent && <div><span>DTE referenciado</span><strong>Tipo {document.parent.typeCode} · Folio {document.parent.folio}</strong></div>}
@@ -73,7 +83,27 @@ export default async function DteDetailPage({ params }: { params: Promise<{ id: 
           </div> : <p>Consumidor final / receptor no individualizado.</p>}
         </section>
 
-        {returnDocument ? <section className="billing-document-lines">
+        {dispatchDocument ? <>
+          <section className="billing-document-lines">
+            <div className="billing-document-row is-head"><span>Producto despachado</span><span>Cant./peso</span><span>Precio ref.</span><span>Monto ref.</span></div>
+            {dispatchDocument.items.map((item) => <div className="billing-document-row" key={item.id}>
+              <span><strong>{item.productName}</strong><small>{item.unit === "KG" ? "precio por kg" : "precio por unidad"}</small></span>
+              <span>{formatQuantity(item.quantity, item.unit)}</span><span>{formatClp(item.unitPrice)}</span><span>{formatClp(item.amount)}</span>
+            </div>)}
+          </section>
+          <section className="billing-document-receiver">
+            <h2>Traslado y transporte</h2>
+            <div className="billing-receiver-detail">
+              <div><span>Origen</span><strong>{dispatchDocument.sourceWarehouse.name}</strong></div>
+              <div><span>Destino</span><strong>{dispatchDocument.destinationWarehouse?.name ?? dispatchDocument.receiverName}</strong></div>
+              <div><span>Motivo</span><strong>{dispatchDocument.reason}</strong></div>
+              <div><span>IndTraslado</span><strong>{dispatchDocument.transferReasonCode ?? "—"}</strong></div>
+              <div><span>Patente</span><strong>{dispatchDocument.vehiclePlate ?? "—"}</strong></div>
+              <div><span>Transportista</span><strong>{dispatchDocument.transportCompanyName ?? "—"}</strong><small>{dispatchDocument.transportCompanyRut ?? ""}</small></div>
+              <div><span>Conductor</span><strong>{dispatchDocument.driverName ?? "—"}</strong><small>{dispatchDocument.driverRut ?? ""}</small></div>
+            </div>
+          </section>
+        </> : returnDocument ? <section className="billing-document-lines">
           <div className="billing-document-row is-head"><span>Producto devuelto</span><span>Cant./peso</span><span>Precio</span><span>Monto NC</span></div>
           {returnDocument.items.map((item) => <div className="billing-document-row" key={item.id}>
             <span><strong>{item.productName}</strong><small>{item.unit === "KG" ? "precio por kg" : "precio por unidad"}</small></span>
