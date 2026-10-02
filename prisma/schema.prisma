@@ -100,6 +100,7 @@ enum WarehouseLocationMovementType {
 enum DteDocumentType {
   BOLETA_ELECTRONICA
   FACTURA_ELECTRONICA
+  GUIA_DESPACHO
   NOTA_CREDITO
   NOTA_DEBITO
 }
@@ -122,6 +123,20 @@ enum DteEnvironment {
   PRODUCTION
 }
 
+enum DispatchType {
+  SALE_DELIVERY
+  INTERNAL_TRANSFER
+  OTHER
+}
+
+enum DispatchStatus {
+  DRAFT
+  READY
+  DISPATCHED
+  RECEIVED
+  CANCELLED
+}
+
 model Product {
   id                         String                      @id @default(cuid()) @db.VarChar(30)
   slug                       String                      @unique @db.VarChar(191)
@@ -142,6 +157,7 @@ model Product {
   inventoryMovements         InventoryMovement[]
   posSaleItems               PosSaleItem[]
   posReturnItems             PosReturnItem[]
+  dispatchItems              DispatchItem[]
   warehousePlacements        WarehouseProductPlacement[]
   warehouseLocationMovements WarehouseLocationMovement[]
 
@@ -176,6 +192,8 @@ model Warehouse {
   reservations               InventoryReservation[]
   posSales                   PosSale[]
   posReturns                 PosReturn[]
+  dispatchesFrom             Dispatch[]                  @relation("DispatchSourceWarehouse")
+  dispatchesTo               Dispatch[]                  @relation("DispatchDestinationWarehouse")
   cashRegisters              CashRegister[]
   layout                     WarehouseLayout?
   productPlacements          WarehouseProductPlacement[]
@@ -436,6 +454,7 @@ model PosSale {
   customer       Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
   items          PosSaleItem[]
   returns        PosReturn[]
+  dispatches     Dispatch[]
   dteDocuments   DteDocument[]
 
   @@index([createdAt])
@@ -510,6 +529,66 @@ model PosReturnItem {
   @@index([productId])
 }
 
+model Dispatch {
+  id                     String         @id @default(cuid()) @db.VarChar(30)
+  dispatchNumber         String         @unique @db.VarChar(40)
+  requestKey             String         @unique @db.VarChar(64)
+  type                   DispatchType
+  status                 DispatchStatus @default(DRAFT)
+  sourceWarehouseId      String         @db.VarChar(30)
+  destinationWarehouseId String?        @db.VarChar(30)
+  saleId                 String?        @db.VarChar(30)
+  orderId                String?        @db.VarChar(30)
+  transferReasonCode     String?        @db.VarChar(10)
+  reason                 String         @db.VarChar(500)
+  receiverRut            String?        @db.VarChar(20)
+  receiverName           String         @db.VarChar(191)
+  receiverGiro           String?        @db.VarChar(191)
+  receiverAddress        String         @db.VarChar(255)
+  receiverCommune        String         @db.VarChar(120)
+  receiverCity           String?        @db.VarChar(120)
+  transportCompanyRut    String?        @db.VarChar(20)
+  transportCompanyName   String?        @db.VarChar(191)
+  driverRut              String?        @db.VarChar(20)
+  driverName             String?        @db.VarChar(191)
+  vehiclePlate           String?        @db.VarChar(20)
+  trailerPlate           String?        @db.VarChar(20)
+  notes                  String?        @db.VarChar(1000)
+  dispatchedAt           DateTime?      @db.DateTime(3)
+  receivedAt             DateTime?      @db.DateTime(3)
+  createdAt              DateTime       @default(now()) @db.DateTime(3)
+  updatedAt              DateTime       @updatedAt @db.DateTime(3)
+  sourceWarehouse        Warehouse      @relation("DispatchSourceWarehouse", fields: [sourceWarehouseId], references: [id], onDelete: Restrict)
+  destinationWarehouse   Warehouse?     @relation("DispatchDestinationWarehouse", fields: [destinationWarehouseId], references: [id], onDelete: Restrict)
+  sale                   PosSale?       @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  order                  Order?         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  items                  DispatchItem[]
+  dteDocuments           DteDocument[]
+
+  @@index([status, createdAt])
+  @@index([sourceWarehouseId, createdAt])
+  @@index([destinationWarehouseId, createdAt])
+  @@index([saleId])
+  @@index([orderId])
+}
+
+model DispatchItem {
+  id          String   @id @default(cuid()) @db.VarChar(30)
+  dispatchId  String   @db.VarChar(30)
+  productId   String   @db.VarChar(30)
+  productName String   @db.VarChar(191)
+  unit        UnitType
+  quantity    Decimal  @db.Decimal(14, 3)
+  unitPrice   Int
+  amount      Int
+  createdAt   DateTime @default(now()) @db.DateTime(3)
+  dispatch    Dispatch @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([dispatchId])
+  @@index([productId])
+}
+
 model Order {
   id                 String         @id @default(cuid()) @db.VarChar(30)
   orderNumber        String         @unique @db.VarChar(40)
@@ -544,6 +623,7 @@ model Order {
   createdAt          DateTime       @default(now()) @db.DateTime(3)
   updatedAt          DateTime       @updatedAt @db.DateTime(3)
   items              OrderItem[]
+  dispatches         Dispatch[]
 
   @@index([status, createdAt])
   @@index([customerEmail, createdAt])
@@ -618,6 +698,7 @@ model DteDocument {
   id               String          @id @default(cuid()) @db.VarChar(30)
   saleId           String?         @db.VarChar(30)
   returnId         String?         @db.VarChar(30)
+  dispatchId       String?         @db.VarChar(30)
   parentId         String?         @db.VarChar(30)
   type             DteDocumentType
   typeCode         Int
@@ -650,6 +731,7 @@ model DteDocument {
   updatedAt        DateTime         @updatedAt @db.DateTime(3)
   sale             PosSale?        @relation(fields: [saleId], references: [id], onDelete: Restrict)
   posReturn        PosReturn?      @relation(fields: [returnId], references: [id], onDelete: Restrict)
+  dispatch         Dispatch?       @relation(fields: [dispatchId], references: [id], onDelete: Restrict)
   parent           DteDocument?     @relation("DteReferences", fields: [parentId], references: [id], onDelete: Restrict)
   references       DteDocument[]    @relation("DteReferences")
   events           DteEvent[]
@@ -657,6 +739,7 @@ model DteDocument {
   @@unique([environment, typeCode, folio])
   @@index([saleId, createdAt])
   @@index([returnId, createdAt])
+  @@index([dispatchId, createdAt])
   @@index([status, createdAt])
   @@index([trackId])
   @@index([parentId])
