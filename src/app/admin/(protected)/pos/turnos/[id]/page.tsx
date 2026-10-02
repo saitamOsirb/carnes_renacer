@@ -23,6 +23,10 @@ export default async function PosShiftReportPage({ params }: { params: Promise<{
       register: { include: { warehouse: true } },
       user: true,
       sales: { include: { _count: { select: { items: true } } }, orderBy: { createdAt: "asc" } },
+      returns: {
+        include: { sale: { select: { id: true, saleNumber: true } }, _count: { select: { items: true } } },
+        orderBy: { createdAt: "asc" },
+      },
       cashMovements: { orderBy: { createdAt: "asc" } },
     },
   });
@@ -34,6 +38,8 @@ export default async function PosShiftReportPage({ params }: { params: Promise<{
     paymentTotals.set(sale.paymentMethod, { count: current.count + 1, total: current.total + sale.total });
   }
   const salesTotal = shift.sales.reduce((sum, sale) => sum + sale.total, 0);
+  const returnTotal = shift.returns.reduce((sum, posReturn) => sum + posReturn.totalAmount, 0);
+  const netTurnover = salesTotal - returnTotal;
   const discounts = shift.sales.reduce((sum, sale) => sum + sale.discount, 0);
   const cashSales = paymentTotals.get(PosPaymentMethod.CASH)?.total ?? 0;
   const cashIn = shift.cashMovements.filter((movement) => movement.type === PosCashMovementType.CASH_IN).reduce((sum, movement) => sum + movement.amount, 0);
@@ -64,25 +70,28 @@ export default async function PosShiftReportPage({ params }: { params: Promise<{
 
         <section className="admin-stats-grid pos-shift-report-stats">
           <div className="admin-stat"><strong>{shift.sales.length}</strong><span>ventas</span></div>
-          <div className="admin-stat"><strong>{formatClp(salesTotal)}</strong><span>venta total</span></div>
+          <div className="admin-stat"><strong>{formatClp(salesTotal)}</strong><span>venta bruta</span></div>
+          <div className="admin-stat"><strong>{formatClp(returnTotal)}</strong><span>devoluciones</span></div>
+          <div className="admin-stat"><strong>{formatClp(netTurnover)}</strong><span>venta neta operativa</span></div>
           <div className="admin-stat"><strong>{formatClp(discounts)}</strong><span>descuentos</span></div>
           <div className="admin-stat"><strong>{formatClp(cashSales)}</strong><span>ventas efectivo</span></div>
         </section>
 
         <section className="pos-shift-report-grid">
           <div className="pos-shift-report-block">
-            <h2>Medios de pago</h2>
+            <h2>Medios de pago · ventas</h2>
             {Object.values(PosPaymentMethod).map((method) => {
               const value = paymentTotals.get(method) ?? { count: 0, total: 0 };
               return <div key={method}><span>{paymentLabels[method]} <small>({value.count})</small></span><strong>{formatClp(value.total)}</strong></div>;
             })}
+            <div className="is-total"><span>Devoluciones procesadas</span><strong>−{formatClp(returnTotal)}</strong></div>
           </div>
           <div className="pos-shift-report-block">
             <h2>Arqueo de efectivo</h2>
             <div><span>Fondo inicial</span><strong>{formatClp(shift.openingAmount)}</strong></div>
             <div><span>Ventas en efectivo</span><strong>{formatClp(cashSales)}</strong></div>
             <div><span>Ingresos</span><strong>+{formatClp(cashIn)}</strong></div>
-            <div><span>Retiros</span><strong>−{formatClp(cashOut)}</strong></div>
+            <div><span>Retiros / reembolsos</span><strong>−{formatClp(cashOut)}</strong></div>
             <div className="is-total"><span>Efectivo esperado</span><strong>{formatClp(expectedCash)}</strong></div>
             <div><span>Efectivo declarado</span><strong>{shift.declaredCash === null ? "—" : formatClp(shift.declaredCash)}</strong></div>
             <div className={`is-difference${(shift.difference ?? 0) !== 0 ? " has-difference" : ""}`}><span>Diferencia</span><strong>{shift.difference === null ? "—" : formatClp(shift.difference)}</strong></div>
@@ -93,7 +102,7 @@ export default async function PosShiftReportPage({ params }: { params: Promise<{
           <h2>Movimientos de efectivo</h2>
           <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Fecha</th><th>Tipo</th><th>Monto</th><th>Motivo</th></tr></thead><tbody>
             {shift.cashMovements.length === 0 && <tr><td colSpan={4}>Sin movimientos adicionales.</td></tr>}
-            {shift.cashMovements.map((movement) => <tr key={movement.id}><td>{movement.createdAt.toLocaleString("es-CL")}</td><td>{movement.type === PosCashMovementType.CASH_IN ? "Ingreso" : "Retiro"}</td><td>{movement.type === PosCashMovementType.CASH_IN ? "+" : "−"}{formatClp(movement.amount)}</td><td>{movement.reason}</td></tr>)}
+            {shift.cashMovements.map((movement) => <tr key={movement.id}><td>{movement.createdAt.toLocaleString("es-CL")}</td><td>{movement.type === PosCashMovementType.CASH_IN ? "Ingreso" : "Salida"}</td><td>{movement.type === PosCashMovementType.CASH_IN ? "+" : "−"}{formatClp(movement.amount)}</td><td>{movement.reason}</td></tr>)}
           </tbody></table></div>
         </section>
 
@@ -102,6 +111,14 @@ export default async function PosShiftReportPage({ params }: { params: Promise<{
           <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Hora</th><th>N° venta</th><th>Pago</th><th>Líneas</th><th>Descuento</th><th>Total</th></tr></thead><tbody>
             {shift.sales.length === 0 && <tr><td colSpan={6}>Sin ventas en este turno.</td></tr>}
             {shift.sales.map((sale) => <tr key={sale.id}><td>{sale.createdAt.toLocaleString("es-CL")}</td><td><Link href={`/admin/pos/ventas/${sale.id}`}>{sale.saleNumber}</Link></td><td>{paymentLabels[sale.paymentMethod]}</td><td>{sale._count.items}</td><td>{formatClp(sale.discount)}</td><td><strong>{formatClp(sale.total)}</strong></td></tr>)}
+          </tbody></table></div>
+        </section>
+
+        <section className="pos-management-section">
+          <h2>Devoluciones procesadas en el turno</h2>
+          <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Hora</th><th>N° devolución</th><th>Venta origen</th><th>Pago original</th><th>Líneas</th><th>Reembolso</th></tr></thead><tbody>
+            {shift.returns.length === 0 && <tr><td colSpan={6}>Sin devoluciones en este turno.</td></tr>}
+            {shift.returns.map((posReturn) => <tr key={posReturn.id}><td>{posReturn.createdAt.toLocaleString("es-CL")}</td><td><strong>{posReturn.returnNumber}</strong></td><td><Link href={`/admin/pos/ventas/${posReturn.sale.id}`}>{posReturn.sale.saleNumber}</Link></td><td>{paymentLabels[posReturn.refundMethod]}</td><td>{posReturn._count.items}</td><td><strong>−{formatClp(posReturn.totalAmount)}</strong></td></tr>)}
           </tbody></table></div>
         </section>
 
