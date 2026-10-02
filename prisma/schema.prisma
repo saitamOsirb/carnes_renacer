@@ -96,6 +96,31 @@ enum WarehouseLocationMovementType {
   SYSTEM_DECREMENT
 }
 
+enum DteDocumentType {
+  BOLETA_ELECTRONICA
+  FACTURA_ELECTRONICA
+  NOTA_CREDITO
+  NOTA_DEBITO
+}
+
+enum DteStatus {
+  DRAFT
+  GENERATED
+  QUEUED
+  SENT
+  ACCEPTED
+  OBSERVED
+  REJECTED
+  ERROR
+  CANCELLED
+}
+
+enum DteEnvironment {
+  MOCK
+  CERTIFICATION
+  PRODUCTION
+}
+
 model Product {
   id                         String                      @id @default(cuid()) @db.VarChar(30)
   slug                       String                      @unique @db.VarChar(191)
@@ -405,6 +430,7 @@ model PosSale {
   cashierUser    PosUser?         @relation("PosCashierSales", fields: [cashierId], references: [id], onDelete: SetNull)
   customer       Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
   items          PosSaleItem[]
+  dteDocuments   DteDocument[]
 
   @@index([createdAt])
   @@index([warehouseId, createdAt])
@@ -520,4 +546,73 @@ model RateLimitBucket {
   count       Int      @default(0)
   windowStart DateTime @db.DateTime(3)
   updatedAt   DateTime @updatedAt @db.DateTime(3)
+}
+
+model DteFolioSequence {
+  id          String         @id @default(cuid()) @db.VarChar(30)
+  typeCode    Int
+  environment DteEnvironment
+  nextFolio   Int            @default(1)
+  createdAt   DateTime       @default(now()) @db.DateTime(3)
+  updatedAt   DateTime       @updatedAt @db.DateTime(3)
+
+  @@unique([typeCode, environment])
+}
+
+model DteDocument {
+  id               String          @id @default(cuid()) @db.VarChar(30)
+  saleId           String?         @db.VarChar(30)
+  parentId         String?         @db.VarChar(30)
+  type             DteDocumentType
+  typeCode         Int
+  folio            Int
+  environment      DteEnvironment
+  status           DteStatus       @default(DRAFT)
+  issueDate        DateTime         @db.DateTime(3)
+  receiverRut      String?          @db.VarChar(20)
+  receiverName     String?          @db.VarChar(191)
+  receiverGiro     String?          @db.VarChar(191)
+  receiverAddress  String?          @db.VarChar(255)
+  receiverCommune  String?          @db.VarChar(120)
+  receiverCity     String?          @db.VarChar(120)
+  netAmount        Int
+  exemptAmount     Int              @default(0)
+  vatAmount        Int
+  vatRate          Int              @default(19)
+  totalAmount      Int
+  trackId          String?          @db.VarChar(100)
+  siiStatusCode    String?          @db.VarChar(80)
+  siiStatusMessage String?          @db.VarChar(500)
+  xmlDraft         String?          @db.LongText
+  xmlSigned        String?          @db.LongText
+  responseRaw      String?          @db.LongText
+  errorMessage     String?          @db.VarChar(1000)
+  issuedAt         DateTime?        @db.DateTime(3)
+  sentAt           DateTime?        @db.DateTime(3)
+  acceptedAt       DateTime?        @db.DateTime(3)
+  createdAt        DateTime         @default(now()) @db.DateTime(3)
+  updatedAt        DateTime         @updatedAt @db.DateTime(3)
+  sale             PosSale?        @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  parent           DteDocument?     @relation("DteReferences", fields: [parentId], references: [id], onDelete: Restrict)
+  references       DteDocument[]    @relation("DteReferences")
+  events           DteEvent[]
+
+  @@unique([environment, typeCode, folio])
+  @@index([saleId, createdAt])
+  @@index([status, createdAt])
+  @@index([trackId])
+  @@index([parentId])
+}
+
+model DteEvent {
+  id         String      @id @default(cuid()) @db.VarChar(30)
+  documentId String      @db.VarChar(30)
+  status     DteStatus
+  code       String?     @db.VarChar(80)
+  message    String      @db.VarChar(1000)
+  raw        String?     @db.LongText
+  createdAt  DateTime    @default(now()) @db.DateTime(3)
+  document   DteDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, createdAt])
 }
