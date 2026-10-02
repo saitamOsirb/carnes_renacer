@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useCart } from "@/components/cart-context";
 import { formatClp } from "@/lib/format";
+import { calculateQuantitySubtotal, formatQuantity } from "@/lib/quantity";
 import { calculateEstimatedShipping } from "@/lib/pricing-config";
 import { calculatePreviewDiscount } from "@/lib/coupon-preview";
 import { publicConfig } from "@/lib/public-config";
@@ -24,17 +25,7 @@ type CheckoutDraft = {
   termsAccepted: boolean;
 };
 
-const emptyDraft: CheckoutDraft = {
-  name: "",
-  email: "",
-  phone: "",
-  rut: "",
-  addressLine: "",
-  addressDetail: "",
-  deliveryDate: "",
-  notes: "",
-  termsAccepted: false,
-};
+const emptyDraft: CheckoutDraft = { name: "", email: "", phone: "", rut: "", addressLine: "", addressDetail: "", deliveryDate: "", notes: "", termsAccepted: false };
 
 function nextBusinessDate() {
   const date = new Date();
@@ -81,7 +72,6 @@ export function CheckoutForm() {
   useEffect(() => {
     setDraft(readDraft());
     setDraftLoaded(true);
-
     void fetch("/api/store-settings", { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
       .then((result: { whatsapp?: string } | null) => {
@@ -111,8 +101,9 @@ export function CheckoutForm() {
   function buildWhatsAppMessage() {
     const productLines = items.flatMap((item, index) => [
       `*${index + 1}. ${item.product.name}*`,
-      `Cantidad: ${item.quantity}`,
-      `Total producto: ${formatClp(item.product.price * item.quantity)}`,
+      `${item.product.unit === "KG" ? "Peso" : "Cantidad"}: ${formatQuantity(item.quantity, item.product.unit)}`,
+      `Precio: ${formatClp(item.product.price)} / ${item.product.unit === "KG" ? "kg" : "un."}`,
+      `Total producto: ${formatClp(calculateQuantitySubtotal(item.product.price, item.quantity))}`,
       "",
     ]);
 
@@ -120,73 +111,35 @@ export function CheckoutForm() {
       `Subtotal: ${formatClp(subtotal)}`,
       `Despacho: ${estimatedShipping === 0 ? "Gratis" : formatClp(estimatedShipping)}`,
     ];
-
     if (coupon) summaryLines.push(`Cupón: ${coupon}`);
     if (previewDiscount > 0) summaryLines.push(`Descuento: -${formatClp(previewDiscount)}`);
     summaryLines.push(`*TOTAL ESTIMADO: ${formatClp(estimatedTotal)}*`);
 
     const address = [draft.addressLine, draft.addressDetail].filter(Boolean).join(", ");
-
     return [
-      "*NUEVA SOLICITUD DE PEDIDO*",
-      "Renacer Distribuidora",
-      "",
-      "Hola, quisiera solicitar un link de pago para este pedido:",
-      "",
-      "--------------------",
-      "*DETALLE DEL PEDIDO*",
-      "--------------------",
-      ...productLines,
-      "--------------------",
-      "*RESUMEN*",
-      "--------------------",
-      ...summaryLines,
-      "",
-      "--------------------",
-      "*DATOS DEL COMPRADOR*",
-      "--------------------",
-      `Nombre: ${draft.name}`,
-      `RUT: ${draft.rut || "No informado"}`,
-      `Teléfono: ${draft.phone}`,
-      `Email: ${draft.email}`,
-      "",
-      "--------------------",
-      "*DATOS DE ENTREGA*",
-      "--------------------",
-      `Dirección: ${address}`,
-      "Comuna: Antofagasta",
-      "Región: Región de Antofagasta",
-      `Fecha preferida: ${draft.deliveryDate || "Sin preferencia"}`,
-      `Indicaciones: ${draft.notes || "Sin indicaciones especiales"}`,
-      "",
-      "Por favor, confirmen stock y total final y envíenme el link de pago por este mismo WhatsApp.",
-      "Gracias.",
+      "*NUEVA SOLICITUD DE PEDIDO*", "Renacer Distribuidora", "", "Hola, quisiera solicitar un link de pago para este pedido:", "",
+      "--------------------", "*DETALLE DEL PEDIDO*", "--------------------", ...productLines,
+      "--------------------", "*RESUMEN*", "--------------------", ...summaryLines, "",
+      "--------------------", "*DATOS DEL COMPRADOR*", "--------------------",
+      `Nombre: ${draft.name}`, `RUT: ${draft.rut || "No informado"}`, `Teléfono: ${draft.phone}`, `Email: ${draft.email}`, "",
+      "--------------------", "*DATOS DE ENTREGA*", "--------------------",
+      `Dirección: ${address}`, "Comuna: Antofagasta", "Región: Región de Antofagasta", `Fecha preferida: ${draft.deliveryDate || "Sin preferencia"}`, `Indicaciones: ${draft.notes || "Sin indicaciones especiales"}`, "",
+      "Por favor, confirmen stock y total final y envíenme el link de pago por este mismo WhatsApp.", "Gracias.",
     ].join("\n");
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!items.length) return;
-
     const nativeEvent = event.nativeEvent as SubmitEvent;
     const submitter = nativeEvent.submitter instanceof HTMLButtonElement ? nativeEvent.submitter : null;
     const intent = submitter?.value ?? "save";
-
     if (!saveDraft() || intent !== "whatsapp") return;
-
-    if (!companyWhatsapp) {
-      setError("El WhatsApp de la empresa no está configurado.");
-      return;
-    }
-
+    if (!companyWhatsapp) { setError("El WhatsApp de la empresa no está configurado."); return; }
     const whatsappUrl = `https://wa.me/${companyWhatsapp}?text=${encodeURIComponent(buildWhatsAppMessage())}`;
     const opened = window.open(whatsappUrl, "_blank");
-
-    if (opened) {
-      opened.opener = null;
-    } else {
-      window.location.assign(whatsappUrl);
-    }
+    if (opened) opened.opener = null;
+    else window.location.assign(whatsappUrl);
   }
 
   if (!hydrated || !draftLoaded) return <div className="container loading-state">Cargando checkout…</div>;
@@ -196,7 +149,7 @@ export function CheckoutForm() {
     <section className="container checkout-layout">
       <form className="checkout-form" onSubmit={handleSubmit}>
         <h2>Datos de entrega</h2>
-        <p className="section-help">Completa tus datos y solicita el link de pago por WhatsApp. Enviaremos el detalle de tu carrito a Renacer Distribuidora para confirmar stock, total final y generar el link de pago.</p>
+        <p className="section-help">Completa tus datos y solicita el link de pago por WhatsApp. El detalle incluye el peso exacto cuando el producto se vende por kg.</p>
         <div className="form-grid">
           <label>Nombre completo<input name="name" required minLength={3} maxLength={120} autoComplete="name" value={draft.name} onChange={(event) => updateField("name", event.target.value)} /></label>
           <label>Email<input name="email" type="email" required maxLength={160} autoComplete="email" value={draft.email} onChange={(event) => updateField("email", event.target.value)} /></label>
@@ -217,12 +170,9 @@ export function CheckoutForm() {
       </form>
       <aside className="order-summary checkout-summary">
         <h2>Tu pedido</h2>
-        {items.map((item) => <div key={item.product.id}><span>{item.product.name} × {item.quantity}</span><strong>{formatClp(item.product.price * item.quantity)}</strong></div>)}
-        <hr />
-        <div><span>Subtotal</span><strong>{formatClp(subtotal)}</strong></div>
-        <div><span>Despacho estimado</span><strong>{estimatedShipping === 0 ? "Gratis" : formatClp(estimatedShipping)}</strong></div>
-        {coupon && <div><span>Cupón</span><strong>{coupon}</strong></div>}
-        {previewDiscount > 0 && <div className="discount-row"><span>Descuento estimado</span><strong>−{formatClp(previewDiscount)}</strong></div>}
+        {items.map((item) => <div key={item.product.id}><span>{item.product.name} · {formatQuantity(item.quantity, item.product.unit)}</span><strong>{formatClp(calculateQuantitySubtotal(item.product.price, item.quantity))}</strong></div>)}
+        <hr /><div><span>Subtotal</span><strong>{formatClp(subtotal)}</strong></div><div><span>Despacho estimado</span><strong>{estimatedShipping === 0 ? "Gratis" : formatClp(estimatedShipping)}</strong></div>
+        {coupon && <div><span>Cupón</span><strong>{coupon}</strong></div>}{previewDiscount > 0 && <div className="discount-row"><span>Descuento estimado</span><strong>−{formatClp(previewDiscount)}</strong></div>}
         <div className="summary-total"><span>Total estimado</span><strong>{formatClp(estimatedTotal)}</strong></div>
         <p className="summary-note">El total mostrado es estimado. Renacer Distribuidora confirmará stock, despacho, descuentos y total final antes de enviarte el link de pago.</p>
       </aside>
