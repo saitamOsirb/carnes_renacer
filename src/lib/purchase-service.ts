@@ -284,6 +284,7 @@ export async function receivePurchaseOrder(input: ReceivePurchaseOrderInput): Pr
             supplierId: order.supplierId,
             purchaseReceiptItemId: receiptItem.id,
             supplierLotNumber: line.supplierLotNumber,
+            unitCostNet: line.unitCostNet,
             manufacturedAt: line.manufacturedAt,
             expirationDate: line.expirationDate,
             quantity: line.quantity,
