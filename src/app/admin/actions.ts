@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { clearAdminSession, createAdminSession, requireAdmin } from "@/lib/admin-auth";
 import { prisma } from "@/lib/prisma";
+import { isValidQuantityForUnit, roundQuantity, toQuantityNumber } from "@/lib/quantity";
 import { setCheckoutWhatsappNumber } from "@/lib/store-settings";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -18,6 +19,15 @@ function integer(formData: FormData, key: string, min = 0, max = 100_000_000): n
   const value = Number(text(formData, key, 30));
   if (!Number.isInteger(value) || value < min || value > max) return null;
   return value;
+}
+
+function decimalQuantity(formData: FormData, key: string, min = 0, max = 1_000_000): number | null {
+  const raw = text(formData, key, 30).replace(",", ".");
+  if (!raw) return null;
+  const value = Number(raw);
+  const rounded = roundQuantity(value);
+  if (!Number.isFinite(value) || Math.abs(value - rounded) > 1e-9 || rounded < min || rounded > max) return null;
+  return rounded;
 }
 
 function slugify(value: string): string {
@@ -83,8 +93,31 @@ function revalidateCatalog(slug?: string): void {
   revalidatePath("/productos");
   revalidatePath("/carrito");
   revalidatePath("/checkout");
+  revalidatePath("/admin/productos");
   revalidatePath("/admin/inventario");
+  revalidatePath("/admin/inventario/mapa");
+  revalidatePath("/admin/consulta-precio");
+  revalidatePath("/consulta-precio");
   if (slug) revalidatePath(`/productos/${slug}`);
+}
+
+async function productUnitCanChange(productId: string): Promise<boolean> {
+  const [movement, stock, placement] = await Promise.all([
+    prisma.inventoryMovement.findFirst({ where: { productId }, select: { id: true } }),
+    prisma.inventoryStock.findFirst({
+      where: {
+        productId,
+        OR: [
+          { onHand: { not: 0 } },
+          { reserved: { not: 0 } },
+          { minStock: { not: 0 } },
+        ],
+      },
+      select: { id: true },
+    }),
+    prisma.warehouseProductPlacement.findFirst({ where: { productId }, select: { id: true } }),
+  ]);
+  return !movement && !stock && !placement;
 }
 
 export async function loginAdmin(formData: FormData): Promise<void> {
@@ -107,11 +140,24 @@ export async function createProduct(formData: FormData): Promise<void> {
   const description = text(formData, "description", 5000);
   const category = text(formData, "category", 100);
   const price = integer(formData, "price", 0);
-  const initialStock = integer(formData, "stock", 0, 1_000_000);
   const unit = text(formData, "unit", 10) === "UNIT" ? UnitType.UNIT : UnitType.KG;
+  const initialStock = decimalQuantity(formData, "stock", 0, 1_000_000);
 
-  if (name.length < 2 || description.length < 3 || category.length < 2 || price === null || initialStock === null) {
-    redirect(statusUrl("/admin/productos", "error", "Completa correctamente nombre, descripción, categoría, precio y stock inicial."));
+  if (
+    name.length < 2
+    || description.length < 3
+    || category.length < 2
+    || price === null
+    || initialStock === null
+    || !isValidQuantityForUnit(initialStock, unit, { allowZero: true, max: 1_000_000 })
+  ) {
+    redirect(statusUrl(
+      "/admin/productos",
+      "error",
+      unit === UnitType.KG
+        ? "Completa los datos correctamente. El stock en kg admite hasta tres decimales."
+        : "Completa los datos correctamente. El stock por unidad debe ser un número entero.",
+    ));
   }
 
   let imageUrl: string | null = null;
@@ -191,8 +237,17 @@ export async function updateProduct(formData: FormData): Promise<void> {
   const description = text(formData, "description", 5000);
   const category = text(formData, "category", 100);
   const price = integer(formData, "price", 0);
+  const targetUnit = text(formData, "unit", 10) === "UNIT" ? UnitType.UNIT : UnitType.KG;
   if (name.length < 2 || description.length < 3 || category.length < 2 || price === null) {
     redirect(statusUrl("/admin/productos", "error", "Los datos del producto son inválidos."));
+  }
+
+  if (targetUnit !== current.unit && !(await productUnitCanChange(id))) {
+    redirect(statusUrl(
+      "/admin/productos",
+      "error",
+      `No se puede cambiar ${current.unit === UnitType.KG ? "kg" : "unidad"} a ${targetUnit === UnitType.KG ? "kg" : "unidad"} porque el producto ya tiene inventario o historial de movimientos. Crea un producto nuevo para conservar la trazabilidad.`,
+    ));
   }
 
   let replacement: string | null = null;
@@ -213,7 +268,7 @@ export async function updateProduct(formData: FormData): Promise<void> {
         description,
         category,
         price,
-        unit: text(formData, "unit", 10) === "UNIT" ? UnitType.UNIT : UnitType.KG,
+        unit: targetUnit,
         active: formData.get("active") === "on",
         featured: formData.get("featured") === "on",
         ...(replacement ? { imageUrl: replacement } : {}),
@@ -236,10 +291,7 @@ export async function deleteProduct(formData: FormData): Promise<void> {
   const product = await prisma.product.findUnique({ where: { id } });
   if (!product) redirect(statusUrl("/admin/productos", "error", "Producto no encontrado."));
 
-  await prisma.product.update({
-    where: { id },
-    data: { active: false, featured: false },
-  });
+  await prisma.product.update({ where: { id }, data: { active: false, featured: false } });
   revalidateCatalog(product.slug);
   redirect(statusUrl("/admin/productos", "ok", `Producto ${product.name} desactivado. Su historial e inventario se conservan.`));
 }
