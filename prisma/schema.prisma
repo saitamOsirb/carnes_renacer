@@ -151,6 +151,17 @@ enum PurchaseReceiptDocumentType {
   OTRO
 }
 
+enum LotMovementType {
+  OPENING
+  RECEIVE
+  SALE
+  ISSUE
+  TRANSFER_OUT
+  TRANSFER_IN
+  RETURN
+  ADJUSTMENT
+}
+
 model Product {
   id                         String                      @id @default(cuid()) @db.VarChar(30)
   slug                       String                      @unique @db.VarChar(191)
@@ -174,6 +185,7 @@ model Product {
   dispatchItems              DispatchItem[]
   purchaseOrderItems         PurchaseOrderItem[]
   purchaseReceiptItems       PurchaseReceiptItem[]
+  lots                       ProductLot[]
   warehousePlacements        WarehouseProductPlacement[]
   warehouseLocationMovements WarehouseLocationMovement[]
 
@@ -211,6 +223,12 @@ model Warehouse {
   dispatchesFrom             Dispatch[]                  @relation("DispatchSourceWarehouse")
   dispatchesTo               Dispatch[]                  @relation("DispatchDestinationWarehouse")
   purchaseOrders             PurchaseOrder[]
+  lotStocks                  InventoryLotStock[]
+  lotMovements               InventoryLotMovement[]
+  lotPlacements              WarehouseLotPlacement[]
+  posSaleLotAllocations      PosSaleLotAllocation[]
+  posReturnLotAllocations    PosReturnLotAllocation[]
+  orderItemLotAllocations    OrderItemLotAllocation[]
   cashRegisters              CashRegister[]
   layout                     WarehouseLayout?
   productPlacements          WarehouseProductPlacement[]
@@ -234,20 +252,21 @@ model WarehouseLayout {
 }
 
 model WarehouseVisualObject {
-  id         String                      @id @default(cuid()) @db.VarChar(30)
-  layoutId   String                      @db.VarChar(30)
-  type       WarehouseVisualObjectType
-  label      String                      @db.VarChar(120)
-  xCm        Int
-  zCm        Int
-  widthCm    Int
-  depthCm    Int
-  heightCm   Int
-  rotation   Int                         @default(0)
-  createdAt  DateTime                    @default(now()) @db.DateTime(3)
-  updatedAt  DateTime                    @updatedAt @db.DateTime(3)
-  layout     WarehouseLayout             @relation(fields: [layoutId], references: [id], onDelete: Cascade)
-  placements WarehouseProductPlacement[]
+  id            String                      @id @default(cuid()) @db.VarChar(30)
+  layoutId      String                      @db.VarChar(30)
+  type          WarehouseVisualObjectType
+  label         String                      @db.VarChar(120)
+  xCm           Int
+  zCm           Int
+  widthCm       Int
+  depthCm       Int
+  heightCm      Int
+  rotation      Int                         @default(0)
+  createdAt     DateTime                    @default(now()) @db.DateTime(3)
+  updatedAt     DateTime                    @updatedAt @db.DateTime(3)
+  layout        WarehouseLayout             @relation(fields: [layoutId], references: [id], onDelete: Cascade)
+  placements    WarehouseProductPlacement[]
+  lotPlacements WarehouseLotPlacement[]
 
   @@index([layoutId])
 }
@@ -482,17 +501,18 @@ model PosSale {
 }
 
 model PosSaleItem {
-  id          String          @id @default(cuid()) @db.VarChar(30)
-  saleId      String          @db.VarChar(30)
-  productId   String          @db.VarChar(30)
-  productName String          @db.VarChar(191)
-  unit        UnitType
-  quantity    Decimal         @db.Decimal(14, 3)
-  unitPrice   Int
-  subtotal    Int
-  sale        PosSale         @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  product     Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
-  returnItems PosReturnItem[]
+  id             String                 @id @default(cuid()) @db.VarChar(30)
+  saleId         String                 @db.VarChar(30)
+  productId      String                 @db.VarChar(30)
+  productName    String                 @db.VarChar(191)
+  unit           UnitType
+  quantity       Decimal                @db.Decimal(14, 3)
+  unitPrice      Int
+  subtotal       Int
+  sale           PosSale                @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product        Product                @relation(fields: [productId], references: [id], onDelete: Restrict)
+  returnItems    PosReturnItem[]
+  lotAllocations PosSaleLotAllocation[]
 
   @@index([saleId])
   @@index([productId])
@@ -525,21 +545,22 @@ model PosReturn {
 }
 
 model PosReturnItem {
-  id             String      @id @default(cuid()) @db.VarChar(30)
-  returnId       String      @db.VarChar(30)
-  saleItemId     String      @db.VarChar(30)
-  productId      String      @db.VarChar(30)
-  productName    String      @db.VarChar(191)
+  id             String                   @id @default(cuid()) @db.VarChar(30)
+  returnId       String                   @db.VarChar(30)
+  saleItemId     String                   @db.VarChar(30)
+  productId      String                   @db.VarChar(30)
+  productName    String                   @db.VarChar(191)
   unit           UnitType
-  quantity       Decimal     @db.Decimal(14, 3)
+  quantity       Decimal                  @db.Decimal(14, 3)
   unitPrice      Int
   grossAmount    Int
-  discountAmount Int         @default(0)
+  discountAmount Int                      @default(0)
   totalAmount    Int
-  createdAt      DateTime    @default(now()) @db.DateTime(3)
-  posReturn      PosReturn   @relation(fields: [returnId], references: [id], onDelete: Cascade)
-  saleItem       PosSaleItem @relation(fields: [saleItemId], references: [id], onDelete: Restrict)
-  product        Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+  createdAt      DateTime                 @default(now()) @db.DateTime(3)
+  posReturn      PosReturn                @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  saleItem       PosSaleItem              @relation(fields: [saleItemId], references: [id], onDelete: Restrict)
+  product        Product                  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lotAllocations PosReturnLotAllocation[]
 
   @@index([returnId])
   @@index([saleItemId])
@@ -590,17 +611,18 @@ model Dispatch {
 }
 
 model DispatchItem {
-  id          String   @id @default(cuid()) @db.VarChar(30)
-  dispatchId  String   @db.VarChar(30)
-  productId   String   @db.VarChar(30)
-  productName String   @db.VarChar(191)
-  unit        UnitType
-  quantity    Decimal  @db.Decimal(14, 3)
-  unitPrice   Int
-  amount      Int
-  createdAt   DateTime @default(now()) @db.DateTime(3)
-  dispatch    Dispatch @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  id             String                  @id @default(cuid()) @db.VarChar(30)
+  dispatchId     String                  @db.VarChar(30)
+  productId      String                  @db.VarChar(30)
+  productName    String                  @db.VarChar(191)
+  unit           UnitType
+  quantity       Decimal                 @db.Decimal(14, 3)
+  unitPrice      Int
+  amount         Int
+  createdAt      DateTime                @default(now()) @db.DateTime(3)
+  dispatch       Dispatch                @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  product        Product                 @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lotAllocations DispatchLotAllocation[]
 
   @@index([dispatchId])
   @@index([productId])
@@ -623,6 +645,7 @@ model Supplier {
   createdAt        DateTime        @default(now()) @db.DateTime(3)
   updatedAt        DateTime        @updatedAt @db.DateTime(3)
   purchaseOrders   PurchaseOrder[]
+  lots             ProductLot[]
 
   @@index([active, name])
   @@index([email])
@@ -709,10 +732,144 @@ model PurchaseReceiptItem {
   purchaseReceipt     PurchaseReceipt   @relation(fields: [purchaseReceiptId], references: [id], onDelete: Cascade)
   purchaseOrderItem   PurchaseOrderItem @relation(fields: [purchaseOrderItemId], references: [id], onDelete: Restrict)
   product             Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lot                 ProductLot?
 
   @@unique([purchaseReceiptId, purchaseOrderItemId])
   @@index([purchaseOrderItemId])
   @@index([productId])
+}
+
+model ProductLot {
+  id                    String                    @id @default(cuid()) @db.VarChar(30)
+  internalCode          String                    @unique @db.VarChar(60)
+  productId             String                    @db.VarChar(30)
+  supplierId            String?                   @db.VarChar(30)
+  purchaseReceiptItemId String?                   @unique @db.VarChar(30)
+  supplierLotNumber     String?                   @db.VarChar(100)
+  manufacturedAt        DateTime?                 @db.DateTime(3)
+  expirationDate        DateTime?                 @db.DateTime(3)
+  createdAt             DateTime                  @default(now()) @db.DateTime(3)
+  updatedAt             DateTime                  @updatedAt @db.DateTime(3)
+  product               Product                   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  supplier              Supplier?                 @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  purchaseReceiptItem   PurchaseReceiptItem?      @relation(fields: [purchaseReceiptItemId], references: [id], onDelete: SetNull)
+  stocks                InventoryLotStock[]
+  movements             InventoryLotMovement[]
+  placements            WarehouseLotPlacement[]
+  posSaleAllocations    PosSaleLotAllocation[]
+  posReturnAllocations  PosReturnLotAllocation[]
+  orderAllocations      OrderItemLotAllocation[]
+  dispatchAllocations   DispatchLotAllocation[]
+
+  @@index([productId, expirationDate])
+  @@index([supplierId, supplierLotNumber])
+}
+
+model InventoryLotStock {
+  id          String     @id @default(cuid()) @db.VarChar(30)
+  lotId       String     @db.VarChar(30)
+  warehouseId String     @db.VarChar(30)
+  onHand      Decimal    @default(0) @db.Decimal(14, 3)
+  createdAt   DateTime   @default(now()) @db.DateTime(3)
+  updatedAt   DateTime   @updatedAt @db.DateTime(3)
+  lot         ProductLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  warehouse   Warehouse  @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@unique([lotId, warehouseId])
+  @@index([warehouseId, onHand])
+}
+
+model InventoryLotMovement {
+  id           String          @id @default(cuid()) @db.VarChar(30)
+  lotId        String          @db.VarChar(30)
+  warehouseId  String          @db.VarChar(30)
+  type         LotMovementType
+  quantity     Decimal         @db.Decimal(14, 3)
+  balanceAfter Decimal         @db.Decimal(14, 3)
+  reference    String?         @db.VarChar(100)
+  note         String?         @db.VarChar(500)
+  createdAt    DateTime        @default(now()) @db.DateTime(3)
+  lot          ProductLot      @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  warehouse    Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@index([lotId, createdAt])
+  @@index([warehouseId, createdAt])
+  @@index([reference])
+}
+
+model WarehouseLotPlacement {
+  id           String                @id @default(cuid()) @db.VarChar(30)
+  warehouseId  String                @db.VarChar(30)
+  objectId     String                @db.VarChar(30)
+  lotId        String                @db.VarChar(30)
+  locationCode String                @default("") @db.VarChar(80)
+  quantity     Decimal               @default(0) @db.Decimal(14, 3)
+  createdAt    DateTime              @default(now()) @db.DateTime(3)
+  updatedAt    DateTime              @updatedAt @db.DateTime(3)
+  warehouse    Warehouse             @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  object       WarehouseVisualObject @relation(fields: [objectId], references: [id], onDelete: Cascade)
+  lot          ProductLot            @relation(fields: [lotId], references: [id], onDelete: Restrict)
+
+  @@unique([objectId, lotId, locationCode])
+  @@index([warehouseId, lotId])
+}
+
+model PosSaleLotAllocation {
+  id          String      @id @default(cuid()) @db.VarChar(30)
+  saleItemId  String      @db.VarChar(30)
+  lotId       String      @db.VarChar(30)
+  warehouseId String      @db.VarChar(30)
+  quantity    Decimal     @db.Decimal(14, 3)
+  createdAt   DateTime    @default(now()) @db.DateTime(3)
+  saleItem    PosSaleItem @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
+  lot         ProductLot  @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  warehouse   Warehouse   @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@unique([saleItemId, lotId])
+  @@index([lotId])
+}
+
+model PosReturnLotAllocation {
+  id           String        @id @default(cuid()) @db.VarChar(30)
+  returnItemId String        @db.VarChar(30)
+  lotId        String        @db.VarChar(30)
+  warehouseId  String        @db.VarChar(30)
+  quantity     Decimal       @db.Decimal(14, 3)
+  createdAt    DateTime      @default(now()) @db.DateTime(3)
+  returnItem   PosReturnItem @relation(fields: [returnItemId], references: [id], onDelete: Cascade)
+  lot          ProductLot    @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  warehouse    Warehouse     @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@unique([returnItemId, lotId])
+  @@index([lotId])
+}
+
+model OrderItemLotAllocation {
+  id          String     @id @default(cuid()) @db.VarChar(30)
+  orderItemId String     @db.VarChar(30)
+  lotId       String     @db.VarChar(30)
+  warehouseId String     @db.VarChar(30)
+  quantity    Decimal    @db.Decimal(14, 3)
+  createdAt   DateTime   @default(now()) @db.DateTime(3)
+  orderItem   OrderItem  @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  lot         ProductLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  warehouse   Warehouse  @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@unique([orderItemId, lotId, warehouseId])
+  @@index([lotId])
+}
+
+model DispatchLotAllocation {
+  id             String       @id @default(cuid()) @db.VarChar(30)
+  dispatchItemId String       @db.VarChar(30)
+  lotId          String       @db.VarChar(30)
+  quantity       Decimal      @db.Decimal(14, 3)
+  createdAt      DateTime     @default(now()) @db.DateTime(3)
+  dispatchItem   DispatchItem @relation(fields: [dispatchItemId], references: [id], onDelete: Cascade)
+  lot            ProductLot   @relation(fields: [lotId], references: [id], onDelete: Restrict)
+
+  @@unique([dispatchItemId, lotId])
+  @@index([lotId])
 }
 
 model Order {
@@ -756,18 +913,19 @@ model Order {
 }
 
 model OrderItem {
-  id                    String                 @id @default(cuid()) @db.VarChar(30)
-  orderId               String                 @db.VarChar(30)
-  productId             String                 @db.VarChar(30)
-  productName           String                 @db.VarChar(191)
-  imageUrl              String                 @db.VarChar(500)
+  id                    String                   @id @default(cuid()) @db.VarChar(30)
+  orderId               String                   @db.VarChar(30)
+  productId             String                   @db.VarChar(30)
+  productName           String                   @db.VarChar(191)
+  imageUrl              String                   @db.VarChar(500)
   unit                  UnitType
-  quantity              Decimal                @db.Decimal(14, 3)
+  quantity              Decimal                  @db.Decimal(14, 3)
   unitPrice             Int
   subtotal              Int
-  order                 Order                  @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product               Product                @relation(fields: [productId], references: [id], onDelete: Restrict)
+  order                 Order                    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product               Product                  @relation(fields: [productId], references: [id], onDelete: Restrict)
   inventoryReservations InventoryReservation[]
+  lotAllocations        OrderItemLotAllocation[]
 
   @@index([orderId])
 }
