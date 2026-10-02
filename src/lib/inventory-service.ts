@@ -1,6 +1,7 @@
 import "server-only";
 
 import { InventoryMovementType, Prisma } from "@prisma/client";
+import { roundQuantity, toQuantityNumber, type QuantityValue } from "@/lib/quantity";
 import { HttpError } from "@/lib/security";
 import { reconcileWarehouseLocationStock } from "@/lib/warehouse-location-service";
 
@@ -10,8 +11,8 @@ type ReservableOrderItem = {
   id: string;
   productId: string;
   productName: string;
-  quantity: number;
-  inventoryReservations: Array<{ warehouseId: string; quantity: number }>;
+  quantity: QuantityValue;
+  inventoryReservations: Array<{ warehouseId: string; quantity: QuantityValue }>;
 };
 
 export async function syncProductInventory(tx: InventoryTx, productId: string): Promise<void> {
@@ -20,8 +21,12 @@ export async function syncProductInventory(tx: InventoryTx, productId: string): 
     select: { onHand: true, reserved: true },
   });
 
-  const stock = stocks.reduce((sum, item) => sum + Math.max(0, item.onHand - item.reserved), 0);
-  const reserved = stocks.reduce((sum, item) => sum + item.reserved, 0);
+  const stock = roundQuantity(stocks.reduce((sum, item) => {
+    const onHand = toQuantityNumber(item.onHand);
+    const reserved = toQuantityNumber(item.reserved);
+    return sum + Math.max(0, onHand - reserved);
+  }, 0));
+  const reserved = roundQuantity(stocks.reduce((sum, item) => sum + toQuantityNumber(item.reserved), 0));
 
   await tx.product.update({
     where: { id: productId },
@@ -32,7 +37,7 @@ export async function syncProductInventory(tx: InventoryTx, productId: string): 
 export async function reserveProductInventory(
   tx: InventoryTx,
   productId: string,
-  quantity: number,
+  quantityValue: QuantityValue,
   orderItemId: string,
   productName: string,
 ): Promise<void> {
@@ -46,13 +51,15 @@ export async function reserveProductInventory(
     return left.warehouse.name.localeCompare(right.warehouse.name, "es");
   });
 
-  let remaining = quantity;
+  let remaining = roundQuantity(toQuantityNumber(quantityValue));
   for (const stock of stocks) {
     if (remaining <= 0) break;
-    const available = Math.max(0, stock.onHand - stock.reserved);
+    const onHand = toQuantityNumber(stock.onHand);
+    const reserved = toQuantityNumber(stock.reserved);
+    const available = roundQuantity(Math.max(0, onHand - reserved));
     if (available <= 0) continue;
 
-    const take = Math.min(available, remaining);
+    const take = roundQuantity(Math.min(available, remaining));
     const updated = await tx.inventoryStock.updateMany({
       where: { id: stock.id, onHand: stock.onHand, reserved: stock.reserved },
       data: { reserved: { increment: take } },
@@ -70,13 +77,13 @@ export async function reserveProductInventory(
         productId,
         type: InventoryMovementType.RESERVATION,
         quantity: take,
-        onHandAfter: stock.onHand,
-        reservedAfter: stock.reserved + take,
+        onHandAfter: onHand,
+        reservedAfter: roundQuantity(reserved + take),
         note: `Reserva para pedido de ${productName}`,
         reference: orderItemId,
       },
     });
-    remaining -= take;
+    remaining = roundQuantity(remaining - take);
   }
 
   if (remaining > 0) {
@@ -93,7 +100,8 @@ async function resolveReservations(tx: InventoryTx, item: ReservableOrderItem) {
     where: { productId: item.productId, warehouse: { isDefault: true } },
     select: { warehouseId: true, reserved: true },
   });
-  if (!fallback || fallback.reserved < item.quantity) {
+  const itemQuantity = toQuantityNumber(item.quantity);
+  if (!fallback || toQuantityNumber(fallback.reserved) < itemQuantity) {
     throw new HttpError(409, `No existe una reserva de inventario consistente para ${item.productName}.`, "INVENTORY_RESERVATION_MISSING");
   }
   return [{ warehouseId: fallback.warehouseId, quantity: item.quantity }];
@@ -103,25 +111,27 @@ export async function releaseItemInventoryReservation(tx: InventoryTx, item: Res
   const reservations = await resolveReservations(tx, item);
 
   for (const reservation of reservations) {
+    const quantity = roundQuantity(toQuantityNumber(reservation.quantity));
     const stock = await tx.inventoryStock.findUnique({
       where: { warehouseId_productId: { warehouseId: reservation.warehouseId, productId: item.productId } },
     });
-    if (!stock || stock.reserved < reservation.quantity) {
+    const currentReserved = stock ? toQuantityNumber(stock.reserved) : 0;
+    if (!stock || currentReserved < quantity) {
       throw new HttpError(409, `Reserva inconsistente para ${item.productName}.`, "INVENTORY_RESERVATION_INVALID");
     }
 
     await tx.inventoryStock.update({
       where: { id: stock.id },
-      data: { reserved: { decrement: reservation.quantity } },
+      data: { reserved: { decrement: quantity } },
     });
     await tx.inventoryMovement.create({
       data: {
         warehouseId: reservation.warehouseId,
         productId: item.productId,
         type: InventoryMovementType.RESERVATION_RELEASE,
-        quantity: reservation.quantity,
+        quantity,
         onHandAfter: stock.onHand,
-        reservedAfter: stock.reserved - reservation.quantity,
+        reservedAfter: roundQuantity(currentReserved - quantity),
         note: `Liberación de reserva de ${item.productName}`,
         reference: item.id,
       },
@@ -136,19 +146,23 @@ export async function consumeItemInventoryReservation(tx: InventoryTx, item: Res
   const reservations = await resolveReservations(tx, item);
 
   for (const reservation of reservations) {
+    const quantity = roundQuantity(toQuantityNumber(reservation.quantity));
     const stock = await tx.inventoryStock.findUnique({
       where: { warehouseId_productId: { warehouseId: reservation.warehouseId, productId: item.productId } },
     });
-    if (!stock || stock.reserved < reservation.quantity || stock.onHand < reservation.quantity) {
+    const reserved = stock ? toQuantityNumber(stock.reserved) : 0;
+    const onHand = stock ? toQuantityNumber(stock.onHand) : 0;
+    if (!stock || reserved < quantity || onHand < quantity) {
       throw new HttpError(409, `Inventario inconsistente para ${item.productName}.`, "INVENTORY_INVALID");
     }
 
-    const onHandAfter = stock.onHand - reservation.quantity;
+    const onHandAfter = roundQuantity(onHand - quantity);
+    const reservedAfter = roundQuantity(reserved - quantity);
     await tx.inventoryStock.update({
       where: { id: stock.id },
       data: {
-        onHand: { decrement: reservation.quantity },
-        reserved: { decrement: reservation.quantity },
+        onHand: { decrement: quantity },
+        reserved: { decrement: quantity },
       },
     });
     await tx.inventoryMovement.create({
@@ -156,9 +170,9 @@ export async function consumeItemInventoryReservation(tx: InventoryTx, item: Res
         warehouseId: reservation.warehouseId,
         productId: item.productId,
         type: InventoryMovementType.SALE,
-        quantity: -reservation.quantity,
+        quantity: -quantity,
         onHandAfter,
-        reservedAfter: stock.reserved - reservation.quantity,
+        reservedAfter,
         note: `Salida por venta de ${item.productName}`,
         reference: item.id,
       },
