@@ -39,13 +39,17 @@ export default async function DteDetailPage({ params }: { params: Promise<{ id: 
   });
   if (!document) notFound();
 
+  const retryable = document.status === DteStatus.ERROR
+    || document.status === DteStatus.GENERATED
+    || document.status === DteStatus.QUEUED;
+
   return (
     <div className="admin-content admin-content-narrow billing-detail-page">
       <div className="billing-detail-actions no-print">
         <Link href="/admin/facturacion" className="admin-button admin-button-secondary">← Facturación</Link>
         <div>
           {document.trackId && <form action={syncDteStatusAction}><input type="hidden" name="documentId" value={document.id} /><button className="admin-button admin-button-secondary" type="submit">Consultar estado SII</button></form>}
-          {[DteStatus.ERROR, DteStatus.GENERATED, DteStatus.QUEUED].includes(document.status) && <form action={retryDteAction}><input type="hidden" name="documentId" value={document.id} /><button className="admin-button admin-button-secondary" type="submit">Reenviar</button></form>}
+          {retryable && <form action={retryDteAction}><input type="hidden" name="documentId" value={document.id} /><button className="admin-button admin-button-secondary" type="submit">Reenviar</button></form>}
           <PrintButton />
         </div>
       </div>
