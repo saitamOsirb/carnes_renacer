@@ -100,9 +100,17 @@ function baseData(input: DispatchTransportInput) {
   };
 }
 
+async function existingDispatchForRequest(key: string): Promise<Dispatch | null> {
+  return prisma.dispatch.findUnique({ where: { requestKey: key } });
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
 export async function createSaleDispatch(input: CreateSaleDispatchInput): Promise<Dispatch> {
   const key = requestKey(input.requestKey);
-  const existing = await prisma.dispatch.findUnique({ where: { requestKey: key } });
+  const existing = await existingDispatchForRequest(key);
   if (existing) return existing;
 
   const sale = await prisma.posSale.findUnique({
@@ -113,32 +121,40 @@ export async function createSaleDispatch(input: CreateSaleDispatchInput): Promis
   if (sale.items.length === 0) throw new DispatchError("La venta no contiene líneas para despachar.");
 
   const data = baseData(input);
-  return prisma.dispatch.create({
-    data: {
-      dispatchNumber: dispatchNumber(),
-      requestKey: key,
-      type: DispatchType.SALE_DELIVERY,
-      status: DispatchStatus.DRAFT,
-      sourceWarehouseId: sale.warehouseId,
-      saleId: sale.id,
-      ...data,
-      items: {
-        create: sale.items.map((item) => ({
-          productId: item.productId,
-          productName: item.productName,
-          unit: item.unit,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          amount: item.subtotal,
-        })),
+  try {
+    return await prisma.dispatch.create({
+      data: {
+        dispatchNumber: dispatchNumber(),
+        requestKey: key,
+        type: DispatchType.SALE_DELIVERY,
+        status: DispatchStatus.DRAFT,
+        sourceWarehouseId: sale.warehouseId,
+        saleId: sale.id,
+        ...data,
+        items: {
+          create: sale.items.map((item) => ({
+            productId: item.productId,
+            productName: item.productName,
+            unit: item.unit,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            amount: item.subtotal,
+          })),
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      const duplicate = await existingDispatchForRequest(key);
+      if (duplicate) return duplicate;
+    }
+    throw error;
+  }
 }
 
 export async function createInternalTransferDispatch(input: CreateTransferDispatchInput): Promise<Dispatch> {
   const key = requestKey(input.requestKey);
-  const existing = await prisma.dispatch.findUnique({ where: { requestKey: key } });
+  const existing = await existingDispatchForRequest(key);
   if (existing) return existing;
 
   const sourceWarehouseId = input.sourceWarehouseId.slice(0, 30);
@@ -200,27 +216,35 @@ export async function createInternalTransferDispatch(input: CreateTransferDispat
   });
 
   const data = baseData(input);
-  return prisma.dispatch.create({
-    data: {
-      dispatchNumber: dispatchNumber(),
-      requestKey: key,
-      type: DispatchType.INTERNAL_TRANSFER,
-      status: DispatchStatus.DRAFT,
-      sourceWarehouseId,
-      destinationWarehouseId,
-      ...data,
-      items: {
-        create: lines.map((line) => ({
-          productId: line.product.id,
-          productName: line.product.name,
-          unit: line.product.unit,
-          quantity: line.quantity,
-          unitPrice: line.product.price,
-          amount: line.amount,
-        })),
+  try {
+    return await prisma.dispatch.create({
+      data: {
+        dispatchNumber: dispatchNumber(),
+        requestKey: key,
+        type: DispatchType.INTERNAL_TRANSFER,
+        status: DispatchStatus.DRAFT,
+        sourceWarehouseId,
+        destinationWarehouseId,
+        ...data,
+        items: {
+          create: lines.map((line) => ({
+            productId: line.product.id,
+            productName: line.product.name,
+            unit: line.product.unit,
+            quantity: line.quantity,
+            unitPrice: line.product.price,
+            amount: line.amount,
+          })),
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      const duplicate = await existingDispatchForRequest(key);
+      if (duplicate) return duplicate;
+    }
+    throw error;
+  }
 }
 
 function guideIsOperational(status: DteStatus): boolean {
@@ -244,6 +268,17 @@ export async function markDispatchDispatched(dispatchIdValue: string, actor = "a
 
     const guide = dispatch.dteDocuments.find((document) => document.typeCode === 52 && guideIsOperational(document.status));
     if (!guide) throw new DispatchError("Emite la Guía de Despacho 52 antes de marcar la salida física.");
+
+    const now = new Date();
+    const claim = await tx.dispatch.updateMany({
+      where: { id: dispatch.id, status: { in: [DispatchStatus.DRAFT, DispatchStatus.READY] } },
+      data: { status: DispatchStatus.DISPATCHED, dispatchedAt: now },
+    });
+    if (claim.count !== 1) {
+      const current = await tx.dispatch.findUnique({ where: { id: dispatch.id } });
+      if (current?.status === DispatchStatus.DISPATCHED || current?.status === DispatchStatus.RECEIVED) return current;
+      throw new DispatchError("El estado del despacho cambió mientras se confirmaba la salida. Actualiza la pantalla e intenta nuevamente.");
+    }
 
     if (dispatch.type === DispatchType.INTERNAL_TRANSFER) {
       if (!dispatch.destinationWarehouseId || !dispatch.destinationWarehouse?.active) {
@@ -288,10 +323,9 @@ export async function markDispatchDispatched(dispatchIdValue: string, actor = "a
       }
     }
 
-    return tx.dispatch.update({
-      where: { id: dispatch.id },
-      data: { status: DispatchStatus.DISPATCHED, dispatchedAt: new Date() },
-    });
+    const result = await tx.dispatch.findUnique({ where: { id: dispatch.id } });
+    if (!result) throw new DispatchError("No fue posible recuperar el despacho después de confirmar la salida.");
+    return result;
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
@@ -305,6 +339,17 @@ export async function markDispatchReceived(dispatchIdValue: string): Promise<Dis
     if (!dispatch) throw new DispatchError("Despacho no encontrado.");
     if (dispatch.status === DispatchStatus.RECEIVED) return dispatch;
     if (dispatch.status !== DispatchStatus.DISPATCHED) throw new DispatchError("Solo un despacho en tránsito puede marcarse como recibido.");
+
+    const now = new Date();
+    const claim = await tx.dispatch.updateMany({
+      where: { id: dispatch.id, status: DispatchStatus.DISPATCHED },
+      data: { status: DispatchStatus.RECEIVED, receivedAt: now },
+    });
+    if (claim.count !== 1) {
+      const current = await tx.dispatch.findUnique({ where: { id: dispatch.id } });
+      if (current?.status === DispatchStatus.RECEIVED) return current;
+      throw new DispatchError("El estado del despacho cambió mientras se confirmaba la recepción. Actualiza la pantalla e intenta nuevamente.");
+    }
 
     if (dispatch.type === DispatchType.INTERNAL_TRANSFER) {
       if (!dispatch.destinationWarehouseId || !dispatch.destinationWarehouse?.active) {
@@ -339,10 +384,9 @@ export async function markDispatchReceived(dispatchIdValue: string): Promise<Dis
       }
     }
 
-    return tx.dispatch.update({
-      where: { id: dispatch.id },
-      data: { status: DispatchStatus.RECEIVED, receivedAt: new Date() },
-    });
+    const result = await tx.dispatch.findUnique({ where: { id: dispatch.id } });
+    if (!result) throw new DispatchError("No fue posible recuperar el despacho después de confirmar la recepción.");
+    return result;
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
