@@ -36,6 +36,7 @@ const navGroups: NavGroup[] = [
       { href: "/admin/compras", label: "Compras" },
       { href: "/admin/proveedores", label: "Proveedores" },
       { href: "/admin/lotes", label: "Lotes y vencimientos" },
+      { href: "/admin/produccion", label: "Producción y desposte" },
       { href: "/admin/despachos", label: "Despachos y guías" },
       { href: "/admin/inventario", label: "Inventario y bodegas", exact: true },
       { href: "/admin/inventario/mapa", label: "Mapa 3D de bodega" },
