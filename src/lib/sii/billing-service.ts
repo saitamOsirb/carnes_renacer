@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import {
+  DispatchStatus,
   DteDocumentType,
   DteEnvironment,
   DteStatus,
@@ -30,6 +31,11 @@ export type IssuePosReturnCreditNoteInput = {
   parentDocumentId?: string;
 };
 
+export type IssueDispatchGuideInput = {
+  dispatchId: string;
+  parentDocumentId?: string;
+};
+
 export class DteBillingError extends Error {
   constructor(message: string) {
     super(message);
@@ -41,6 +47,7 @@ export function dteTypeCode(type: DteDocumentType): number {
   switch (type) {
     case DteDocumentType.BOLETA_ELECTRONICA: return 39;
     case DteDocumentType.FACTURA_ELECTRONICA: return 33;
+    case DteDocumentType.GUIA_DESPACHO: return 52;
     case DteDocumentType.NOTA_CREDITO: return 61;
     case DteDocumentType.NOTA_DEBITO: return 56;
   }
@@ -50,6 +57,7 @@ export function dteTypeLabel(type: DteDocumentType): string {
   switch (type) {
     case DteDocumentType.BOLETA_ELECTRONICA: return "Boleta electrónica";
     case DteDocumentType.FACTURA_ELECTRONICA: return "Factura electrónica";
+    case DteDocumentType.GUIA_DESPACHO: return "Guía de despacho electrónica";
     case DteDocumentType.NOTA_CREDITO: return "Nota de crédito";
     case DteDocumentType.NOTA_DEBITO: return "Nota de débito";
   }
@@ -86,7 +94,7 @@ function documentId(): string {
 }
 
 function taxTotals(grossTotal: number, vatRate: number): { net: number; vat: number } {
-  if (!Number.isInteger(grossTotal) || grossTotal <= 0) throw new DteBillingError("El total de la venta no es válido para emitir un DTE.");
+  if (!Number.isInteger(grossTotal) || grossTotal <= 0) throw new DteBillingError("El total de la operación no es válido para emitir un DTE.");
   if (!Number.isInteger(vatRate) || vatRate < 0 || vatRate > 100) throw new DteBillingError("La tasa de IVA configurada no es válida.");
   if (vatRate === 0) return { net: grossTotal, vat: 0 };
   const net = Math.round(grossTotal / (1 + vatRate / 100));
@@ -395,6 +403,150 @@ export async function issuePosReturnCreditNote(input: IssuePosReturnCreditNoteIn
         message: `Nota de crédito generada por ${posReturn.returnNumber}, referenciando DTE ${parent.typeCode} folio ${parent.folio}.`,
       },
     });
+    return created;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+  return submitCreatedDocument(document);
+}
+
+export async function issueDispatchGuideDte(input: IssueDispatchGuideInput): Promise<DteDocument> {
+  const config = getSiiConfig();
+  if (config.environment !== DteEnvironment.MOCK) assertSiiCanSubmit(config);
+
+  const dispatch = await prisma.dispatch.findUnique({
+    where: { id: input.dispatchId.slice(0, 30) },
+    include: {
+      items: { orderBy: { productName: "asc" } },
+      dteDocuments: { orderBy: { createdAt: "desc" } },
+      sale: { include: { dteDocuments: { orderBy: { createdAt: "desc" } } } },
+    },
+  });
+  if (!dispatch) throw new DteBillingError("Despacho no encontrado.");
+  if (dispatch.status === DispatchStatus.CANCELLED) throw new DteBillingError("El despacho está cancelado.");
+  if (dispatch.items.length === 0) throw new DteBillingError("El despacho no contiene productos.");
+
+  const blocking = dispatch.dteDocuments.find((item) => item.typeCode === 52 && item.status !== DteStatus.CANCELLED && item.status !== DteStatus.REJECTED);
+  if (blocking) throw new DteBillingError(`El despacho ya tiene guía 52 folio ${blocking.folio} en estado ${blocking.status}.`);
+
+  const possibleParents = dispatch.sale?.dteDocuments.filter((item) =>
+    (item.typeCode === 33 || item.typeCode === 39)
+    && item.status !== DteStatus.CANCELLED
+    && item.status !== DteStatus.REJECTED,
+  ) ?? [];
+  const parent = input.parentDocumentId
+    ? possibleParents.find((item) => item.id === input.parentDocumentId?.slice(0, 30))
+    : possibleParents[0];
+  if (parent && parent.environment !== config.environment) {
+    throw new DteBillingError("El DTE referenciado pertenece a otro ambiente SII.");
+  }
+
+  const receiverRutRaw = clean(dispatch.receiverRut, 20);
+  if (receiverRutRaw && !isValidRut(receiverRutRaw)) throw new DteBillingError("El RUT del receptor del despacho no es válido.");
+  if (config.environment !== DteEnvironment.MOCK && !receiverRutRaw) {
+    throw new DteBillingError("Para emitir una guía fuera de MOCK registra el RUT del receptor.");
+  }
+  const receiverRut = receiverRutRaw
+    ? normalizeRut(receiverRutRaw)
+    : placeholder("", "66666666-6", config.environment);
+
+  const totalAmount = dispatch.items.reduce((sum, item) => sum + item.amount, 0);
+  const { net, vat } = taxTotals(totalAmount, config.vatRate);
+  const typeCode = dteTypeCode(DteDocumentType.GUIA_DESPACHO);
+  const now = new Date();
+  const id = documentId();
+
+  const document = await prisma.$transaction(async (tx) => {
+    const folio = await nextFolio(tx, typeCode, config.environment);
+    const snapshot: DteXmlSnapshot = {
+      id: `DTE-${typeCode}-${folio}`,
+      typeCode,
+      folio,
+      issueDate: now,
+      saleNumber: dispatch.dispatchNumber,
+      issuer: {
+        rut: placeholder(config.company.rut, "76000000-0", config.environment),
+        legalName: placeholder(config.company.legalName, "Renacer Distribuidora", config.environment),
+        giro: placeholder(config.company.giro, "Venta de alimentos", config.environment),
+        activityCode: placeholder(config.company.activityCode, "000000", config.environment),
+        address: placeholder(config.company.address, "Dirección pendiente", config.environment),
+        commune: placeholder(config.company.commune, "Comuna pendiente", config.environment),
+        city: placeholder(config.company.city, "Ciudad pendiente", config.environment),
+      },
+      receiver: {
+        rut: receiverRut,
+        name: dispatch.receiverName,
+        giro: dispatch.receiverGiro,
+        address: dispatch.receiverAddress,
+        commune: dispatch.receiverCommune,
+        city: dispatch.receiverCity,
+      },
+      netAmount: net,
+      exemptAmount: 0,
+      vatRate: config.vatRate,
+      vatAmount: vat,
+      totalAmount,
+      lines: dispatch.items.map((item, index) => ({
+        line: index + 1,
+        name: item.productName,
+        quantity: toQuantityNumber(item.quantity),
+        unit: item.unit,
+        unitPrice: item.unitPrice,
+        amount: item.amount,
+      })),
+      references: parent
+        ? [{ line: 1, documentType: parent.typeCode, folio: parent.folio, issueDate: parent.issueDate, reason: `Despacho ${dispatch.dispatchNumber}` }]
+        : [{ line: 1, documentType: "SET", folio: dispatch.dispatchNumber, reason: dispatch.reason }],
+      dispatch: {
+        transferReasonCode: dispatch.transferReasonCode,
+        destinationAddress: dispatch.receiverAddress,
+        destinationCommune: dispatch.receiverCommune,
+        destinationCity: dispatch.receiverCity,
+        vehiclePlate: dispatch.vehiclePlate,
+        carrierRut: dispatch.transportCompanyRut ? normalizeRut(dispatch.transportCompanyRut) : null,
+        driverRut: dispatch.driverRut ? normalizeRut(dispatch.driverRut) : null,
+        driverName: dispatch.driverName,
+      },
+    };
+    const xmlDraft = buildDteXmlDraft(snapshot);
+
+    const created = await tx.dteDocument.create({
+      data: {
+        id,
+        saleId: dispatch.saleId,
+        dispatchId: dispatch.id,
+        parentId: parent?.id ?? null,
+        type: DteDocumentType.GUIA_DESPACHO,
+        typeCode,
+        folio,
+        environment: config.environment,
+        status: DteStatus.GENERATED,
+        issueDate: now,
+        receiverRut,
+        receiverName: dispatch.receiverName,
+        receiverGiro: dispatch.receiverGiro,
+        receiverAddress: dispatch.receiverAddress,
+        receiverCommune: dispatch.receiverCommune,
+        receiverCity: dispatch.receiverCity,
+        netAmount: net,
+        exemptAmount: 0,
+        vatAmount: vat,
+        vatRate: config.vatRate,
+        totalAmount,
+        xmlDraft,
+        issuedAt: now,
+      },
+    });
+    await tx.dteEvent.create({
+      data: {
+        documentId: created.id,
+        status: DteStatus.GENERATED,
+        code: "DISPATCH_GUIDE_GENERATED",
+        message: `Guía de despacho electrónica generada para ${dispatch.dispatchNumber}.`,
+      },
+    });
+    if (dispatch.status === DispatchStatus.DRAFT) {
+      await tx.dispatch.update({ where: { id: dispatch.id }, data: { status: DispatchStatus.READY } });
+    }
     return created;
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
