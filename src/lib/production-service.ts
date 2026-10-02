@@ -85,10 +85,14 @@ function isUniqueError(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
-function startOfToday(): Date {
-  const date = new Date();
+function startOfDay(value = new Date()): Date {
+  const date = new Date(value);
   date.setHours(0, 0, 0, 0);
   return date;
+}
+
+function isBeforeDay(left: Date, right: Date): boolean {
+  return startOfDay(left).getTime() < startOfDay(right).getTime();
 }
 
 export function parseProductionProcessType(value: string): ProductionProcessType {
@@ -141,7 +145,7 @@ export async function createProductionBatch(input: CreateProductionBatchInput): 
     throw new ProductionError("Agrupa cada producto de salida en una sola línea.");
   }
   for (const output of normalizedOutputs) {
-    if (output.manufacturedAt && output.expirationDate && output.expirationDate.getTime() < output.manufacturedAt.getTime()) {
+    if (output.manufacturedAt && output.expirationDate && isBeforeDay(output.expirationDate, output.manufacturedAt)) {
       throw new ProductionError("El vencimiento de una salida no puede ser anterior a su elaboración.");
     }
   }
@@ -184,7 +188,7 @@ export async function createProductionBatch(input: CreateProductionBatchInput): 
       });
       if (lots.length !== normalizedInputs.length) throw new ProductionError("Uno o más lotes de entrada ya no existen.");
       const lotMap = new Map(lots.map((lot) => [lot.id, lot]));
-      const today = startOfToday();
+      const today = startOfDay();
 
       const resolvedInputs = normalizedInputs.map((line) => {
         const lot = lotMap.get(line.lotId);
@@ -198,7 +202,7 @@ export async function createProductionBatch(input: CreateProductionBatchInput): 
         if (availableLot + 1e-9 < line.quantity) {
           throw new ProductionError(`${lot.product.name} · ${lot.internalCode}: saldo de lote insuficiente.`);
         }
-        if (lot.expirationDate && lot.expirationDate.getTime() < today.getTime()) {
+        if (lot.expirationDate && isBeforeDay(lot.expirationDate, today)) {
           throw new ProductionError(`${lot.product.name} · ${lot.internalCode}: el lote está vencido y no puede transformarse en producto vendible.`);
         }
         const totalCostNet = lot.unitCostNet == null
@@ -342,14 +346,14 @@ export async function createProductionBatch(input: CreateProductionBatchInput): 
         .map((line) => line.lot.expirationDate)
         .filter((value): value is Date => value instanceof Date)
         .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
-      const manufacturedDefault = new Date();
+      const manufacturedDefault = startOfDay();
 
       for (const output of costedOutputs) {
         const product = outputProductMap.get(output.productId);
         if (!product) throw new ProductionError("Producto de salida no encontrado durante la transacción.");
         const manufacturedAt = output.manufacturedAt ?? manufacturedDefault;
         const expirationDate = output.expirationDate ?? inheritedExpiry;
-        if (expirationDate && expirationDate.getTime() < manufacturedAt.getTime()) {
+        if (expirationDate && isBeforeDay(expirationDate, manufacturedAt)) {
           throw new ProductionError(`${product.name}: el vencimiento resultante es anterior a la fecha de elaboración.`);
         }
 
