@@ -7,6 +7,16 @@ export type DteXmlLine = {
   unit: "KG" | "UNIT";
   unitPrice: number;
   amount: number;
+  discountAmount?: number;
+};
+
+export type DteXmlReference = {
+  line: number;
+  documentType: string | number;
+  folio: string | number;
+  issueDate?: Date | null;
+  code?: number | null;
+  reason: string;
 };
 
 export type DteXmlSnapshot = {
@@ -38,6 +48,7 @@ export type DteXmlSnapshot = {
   vatAmount: number;
   totalAmount: number;
   lines: DteXmlLine[];
+  references?: DteXmlReference[];
 };
 
 function xml(value: string | number | null | undefined): string {
@@ -71,6 +82,23 @@ function receiverXml(snapshot: DteXmlSnapshot): string {
   ].filter(Boolean).join("");
 }
 
+function referencesXml(snapshot: DteXmlSnapshot): string {
+  const references = snapshot.references?.length
+    ? snapshot.references
+    : [{ line: 1, documentType: "SET", folio: snapshot.saleNumber, reason: "Venta POS origen" }];
+
+  return references.map((reference) => [
+    "<Referencia>",
+    `<NroLinRef>${reference.line}</NroLinRef>`,
+    `<TpoDocRef>${xml(reference.documentType)}</TpoDocRef>`,
+    `<FolioRef>${xml(reference.folio)}</FolioRef>`,
+    reference.issueDate ? `<FchRef>${dateOnly(reference.issueDate)}</FchRef>` : "",
+    reference.code ? `<CodRef>${reference.code}</CodRef>` : "",
+    `<RazonRef>${xml(reference.reason)}</RazonRef>`,
+    "</Referencia>",
+  ].filter(Boolean).join("")).join("");
+}
+
 export function buildDteXmlDraft(snapshot: DteXmlSnapshot): string {
   const detail = snapshot.lines.map((line) => [
     "<Detalle>",
@@ -79,9 +107,10 @@ export function buildDteXmlDraft(snapshot: DteXmlSnapshot): string {
     `<QtyItem>${line.quantity}</QtyItem>`,
     `<UnmdItem>${line.unit === "KG" ? "KG" : "UN"}</UnmdItem>`,
     `<PrcItem>${line.unitPrice}</PrcItem>`,
+    line.discountAmount && line.discountAmount > 0 ? `<DescuentoMonto>${line.discountAmount}</DescuentoMonto>` : "",
     `<MontoItem>${line.amount}</MontoItem>`,
     "</Detalle>",
-  ].join("")).join("");
+  ].filter(Boolean).join("")).join("");
 
   return [
     '<?xml version="1.0" encoding="ISO-8859-1"?>',
@@ -113,8 +142,7 @@ export function buildDteXmlDraft(snapshot: DteXmlSnapshot): string {
     "</Totales>",
     "</Encabezado>",
     detail,
-    "<Referencia><NroLinRef>1</NroLinRef><TpoDocRef>SET</TpoDocRef>",
-    `<FolioRef>${xml(snapshot.saleNumber)}</FolioRef><RazonRef>Venta POS origen</RazonRef></Referencia>`,
+    referencesXml(snapshot),
     "</Documento>",
     "</DTE>",
   ].filter(Boolean).join("");
