@@ -20,6 +20,7 @@ const navGroups: NavGroup[] = [
     label: "POS",
     items: [
       { href: "/admin/pos", label: "Punto de venta", exact: true },
+      { href: "/admin/consulta-precio", label: "Consulta de precio" },
       { href: "/admin/pos/cajas", label: "Cajas" },
       { href: "/admin/pos/configuracion", label: "Usuarios POS" },
       { href: "/admin/pos/reportes", label: "Reportes" },
