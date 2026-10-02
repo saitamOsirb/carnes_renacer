@@ -4,23 +4,36 @@ import { prisma } from "@/lib/prisma";
 import { createProduct, deleteProduct, updateProduct } from "@/app/admin/actions";
 import { updateProductBarcode } from "@/app/admin/product-barcode-actions";
 import { formatQuantity, roundQuantity, toQuantityNumber } from "@/lib/quantity";
+import { SCALE_PLU_PREFIX } from "@/lib/scale-barcode";
 
 export const dynamic = "force-dynamic";
 
 const BARCODE_PREFIX = "barcode:";
 
 export default async function AdminProductsPage({ searchParams }: { searchParams: Promise<{ ok?: string; error?: string }> }) {
-  const [products, barcodeSettings, query] = await Promise.all([
+  const [products, identifierSettings, query] = await Promise.all([
     prisma.product.findMany({ orderBy: [{ active: "desc" }, { name: "asc" }] }),
     prisma.storeSetting.findMany({
-      where: { key: { startsWith: BARCODE_PREFIX } },
+      where: {
+        OR: [
+          { key: { startsWith: BARCODE_PREFIX } },
+          { key: { startsWith: SCALE_PLU_PREFIX } },
+        ],
+      },
       select: { key: true, value: true },
     }),
     searchParams,
   ]);
 
   const barcodeByProduct = new Map(
-    barcodeSettings.map((setting) => [setting.value, setting.key.slice(BARCODE_PREFIX.length)]),
+    identifierSettings
+      .filter((setting) => setting.key.startsWith(BARCODE_PREFIX))
+      .map((setting) => [setting.value, setting.key.slice(BARCODE_PREFIX.length)]),
+  );
+  const scalePluByProduct = new Map(
+    identifierSettings
+      .filter((setting) => setting.key.startsWith(SCALE_PLU_PREFIX))
+      .map((setting) => [setting.value, setting.key.slice(SCALE_PLU_PREFIX.length)]),
   );
 
   return (
@@ -52,14 +65,15 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
           </div>
           <button className="admin-button admin-button-primary" type="submit">Crear producto</button>
         </form>
-        <div className="admin-inline-notice" style={{ marginTop: 16 }}>Después de crear el producto podrás asociar su código de barras directamente en su ficha. Puedes escribirlo o enfocar el campo y escanear con un lector USB/Bluetooth.</div>
+        <div className="admin-inline-notice" style={{ marginTop: 16 }}>Después de crear el producto podrás asociar su código de barras y, si se vende por kg, su PLU de balanza.</div>
       </section>
 
-      <div className="admin-inline-notice">El stock físico y reservado es de solo lectura aquí. Usa <Link href="/admin/inventario">Inventario</Link> para entradas, salidas, ajustes, mínimos y transferencias. La unidad de medida no puede cambiarse una vez que exista historial de inventario.</div>
+      <div className="admin-inline-notice">El stock físico y reservado es de solo lectura aquí. Usa <Link href="/admin/inventario">Inventario</Link> para entradas, salidas, ajustes, mínimos y transferencias. Configura el formato de etiquetas en <Link href="/admin/pos/balanza">Integración de balanza</Link>.</div>
 
       <section className="admin-products-list">
         {products.map((product) => {
           const barcode = barcodeByProduct.get(product.id) ?? "";
+          const scalePlu = scalePluByProduct.get(product.id) ?? "";
           const physical = toQuantityNumber(product.stock);
           const reserved = toQuantityNumber(product.reserved);
           const available = roundQuantity(Math.max(0, physical - reserved));
@@ -72,15 +86,37 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
                   <span>{product.active ? "Activo" : "Inactivo"}</span>
                   <small>ID: {product.id}</small>
                   <small>Código: {barcode || "Sin código de barras"}</small>
+                  <small>PLU balanza: {scalePlu || "Sin PLU"}</small>
                 </div>
               </div>
 
               <form action={updateProductBarcode} className="admin-form" style={{ marginBottom: 20, paddingBottom: 18, borderBottom: "1px solid #ece8e3" }}>
                 <input type="hidden" name="productId" value={product.id} />
                 <div className="admin-grid admin-grid-3" style={{ alignItems: "end" }}>
-                  <label>Código de barras<input name="barcode" defaultValue={barcode} minLength={4} maxLength={80} autoComplete="off" placeholder="Ej: 7801234567890" /><small>Enfoca este campo y escanea. Dejar vacío desasocia el código.</small></label>
-                  <div><button className="admin-button admin-button-secondary" type="submit">Guardar código</button></div>
-                  <div><Link className="admin-button admin-button-secondary" href="/admin/consulta-precio">Probar consulta</Link></div>
+                  <label>
+                    Código de barras normal
+                    <input name="barcode" defaultValue={barcode} minLength={4} maxLength={80} autoComplete="off" placeholder="Ej: 7801234567890" />
+                    <small>Enfoca este campo y escanea. Vacío = sin asociación.</small>
+                  </label>
+                  <label>
+                    PLU balanza {product.unit === "KG" ? "" : "(no aplica)"}
+                    <input
+                      name="scalePlu"
+                      defaultValue={scalePlu}
+                      inputMode="numeric"
+                      pattern="[0-9]{5}"
+                      minLength={5}
+                      maxLength={5}
+                      autoComplete="off"
+                      placeholder="01234"
+                      disabled={product.unit !== "KG"}
+                    />
+                    <small>Exactamente 5 dígitos. Solo productos vendidos por kg.</small>
+                  </label>
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <button className="admin-button admin-button-secondary" type="submit">Guardar códigos</button>
+                    <Link className="admin-button admin-button-secondary" href="/admin/pos/balanza">Configurar balanza</Link>
+                  </div>
                 </div>
               </form>
 
