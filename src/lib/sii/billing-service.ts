@@ -15,7 +15,7 @@ import { queryDteStatus, submitDteToSii } from "@/lib/sii/transport";
 
 export type IssuePosDteInput = {
   saleId: string;
-  type: DteDocumentType.BOLETA_ELECTRONICA | DteDocumentType.FACTURA_ELECTRONICA;
+  type: DteDocumentType;
   receiverRut?: string;
   receiverName?: string;
   receiverGiro?: string;
@@ -103,6 +103,11 @@ function placeholder(value: string, fallback: string, environment: DteEnvironmen
 
 async function recordTransportResult(document: DteDocument, result: Awaited<ReturnType<typeof submitDteToSii>>): Promise<DteDocument> {
   const now = new Date();
+  const wasSent = result.status === DteStatus.SENT
+    || result.status === DteStatus.ACCEPTED
+    || result.status === DteStatus.OBSERVED
+    || result.status === DteStatus.REJECTED;
+
   return prisma.$transaction(async (tx) => {
     const updated = await tx.dteDocument.update({
       where: { id: document.id },
@@ -113,7 +118,7 @@ async function recordTransportResult(document: DteDocument, result: Awaited<Retu
         siiStatusMessage: result.message,
         responseRaw: result.raw,
         xmlSigned: result.signedXml ?? undefined,
-        sentAt: [DteStatus.SENT, DteStatus.ACCEPTED, DteStatus.OBSERVED, DteStatus.REJECTED].includes(result.status) ? now : undefined,
+        sentAt: wasSent ? now : undefined,
         acceptedAt: result.status === DteStatus.ACCEPTED ? now : undefined,
         errorMessage: result.status === DteStatus.ERROR ? result.message : null,
       },
@@ -146,6 +151,10 @@ async function markTransportError(documentIdValue: string, error: unknown): Prom
 }
 
 export async function issuePosSaleDte(input: IssuePosDteInput): Promise<DteDocument> {
+  if (input.type !== DteDocumentType.BOLETA_ELECTRONICA && input.type !== DteDocumentType.FACTURA_ELECTRONICA) {
+    throw new DteBillingError("Este flujo solo permite boleta electrónica tipo 39 o factura electrónica tipo 33.");
+  }
+
   const config = getSiiConfig();
   if (config.environment !== DteEnvironment.MOCK) assertSiiCanSubmit(config);
 
@@ -161,7 +170,8 @@ export async function issuePosSaleDte(input: IssuePosDteInput): Promise<DteDocum
 
   const blocking = sale.dteDocuments.find((item) =>
     [33, 39].includes(item.typeCode)
-    && ![DteStatus.CANCELLED, DteStatus.REJECTED].includes(item.status),
+    && item.status !== DteStatus.CANCELLED
+    && item.status !== DteStatus.REJECTED,
   );
   if (blocking) {
     throw new DteBillingError(`La venta ya tiene ${dteTypeLabel(blocking.type)} folio ${blocking.folio} en estado ${blocking.status}.`);
@@ -284,7 +294,10 @@ export async function issuePosSaleDte(input: IssuePosDteInput): Promise<DteDocum
 export async function retryDteSubmission(documentIdValue: string): Promise<DteDocument> {
   const document = await prisma.dteDocument.findUnique({ where: { id: documentIdValue.slice(0, 30) } });
   if (!document) throw new DteBillingError("DTE no encontrado.");
-  if (![DteStatus.ERROR, DteStatus.GENERATED, DteStatus.QUEUED].includes(document.status)) {
+  const retryable = document.status === DteStatus.ERROR
+    || document.status === DteStatus.GENERATED
+    || document.status === DteStatus.QUEUED;
+  if (!retryable) {
     throw new DteBillingError(`El documento está en estado ${document.status} y no puede reenviarse automáticamente.`);
   }
   const config = getSiiConfig();
