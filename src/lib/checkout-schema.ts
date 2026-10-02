@@ -1,9 +1,13 @@
 import { z } from "zod";
+import { roundQuantity } from "@/lib/quantity";
 import { validateRut } from "@/lib/rut";
 
 export const checkoutItemSchema = z.object({
   productId: z.string().trim().min(2).max(80).regex(/^[a-z0-9-]+$/),
-  quantity: z.number().int().min(1).max(25),
+  quantity: z.number().positive().max(100_000).refine(
+    (value) => Math.abs(value - roundQuantity(value)) < 1e-9,
+    "La cantidad admite como máximo tres decimales.",
+  ),
 });
 
 export const checkoutSchema = z.object({
