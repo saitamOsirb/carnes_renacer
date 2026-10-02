@@ -35,6 +35,10 @@ function refresh(): void {
   revalidatePath("/admin/inventario/mapa");
 }
 
+function actorName(): string {
+  return (process.env.ADMIN_USERNAME?.trim() || "admin").slice(0, 80);
+}
+
 export async function assignLotPlacementAction(formData: FormData): Promise<void> {
   await requireAdmin();
   const warehouseId = text(formData, "warehouseId", 30);
@@ -71,7 +75,7 @@ export async function assignLotPlacementAction(formData: FormData): Promise<void
         if (aggregateIncrease > unlocatedProduct + 1e-9) throw new Error("PRODUCT_OVER_ALLOCATE");
         if (aggregatePlacement) await tx.warehouseProductPlacement.update({ where: { id: aggregatePlacement.id }, data: { quantity: { increment: aggregateIncrease } } });
         else await tx.warehouseProductPlacement.create({ data: { warehouseId, productId: lotStock.lot.productId, objectId, locationCode, quantity: aggregateIncrease } });
-        await tx.warehouseLocationMovement.create({ data: { warehouseId, productId: lotStock.lot.productId, type: WarehouseLocationMovementType.ALLOCATE, quantity: aggregateIncrease, locatedAfter: roundQuantity(located + aggregateIncrease), toObjectId: object.id, toObjectLabel: object.label, toLocationCode: locationCode || null, reference: `LOT-${lotStock.lot.internalCode}`, note: "Ubicación física detallada por lote", actor: (process.env.ADMIN_USERNAME?.trim() || "admin").slice(0, 80) } });
+        await tx.warehouseLocationMovement.create({ data: { warehouseId, productId: lotStock.lot.productId, type: WarehouseLocationMovementType.ALLOCATE, quantity: aggregateIncrease, locatedAfter: roundQuantity(located + aggregateIncrease), toObjectId: object.id, toObjectLabel: object.label, toLocationCode: locationCode || null, reference: `LOT-${lotStock.lot.internalCode}`, note: "Ubicación física detallada por lote", actor: actorName() } });
       }
 
       const existing = await tx.warehouseLotPlacement.findFirst({ where: { warehouseId, objectId, lotId, locationCode } });
@@ -96,20 +100,50 @@ export async function removeLotPlacementAction(formData: FormData): Promise<void
   const warehouseId = text(formData, "warehouseId", 30);
   if (!placementId || !warehouseId) redirect(lotsUrl("error", "Ubicación de lote inválida.", warehouseId));
 
-  await prisma.$transaction(async (tx) => {
-    const placement = await tx.warehouseLotPlacement.findUnique({ where: { id: placementId }, include: { lot: true } });
-    if (!placement || placement.warehouseId !== warehouseId) throw new Error("LOT_PLACEMENT_NOT_FOUND");
-    const productPlacement = await tx.warehouseProductPlacement.findFirst({ where: { warehouseId, productId: placement.lot.productId, objectId: placement.objectId, locationCode: placement.locationCode } });
-    await tx.warehouseLotPlacement.delete({ where: { id: placement.id } });
+  try {
+    await prisma.$transaction(async (tx) => {
+      const placement = await tx.warehouseLotPlacement.findUnique({
+        where: { id: placementId },
+        include: { lot: true, object: { select: { label: true } } },
+      });
+      if (!placement || placement.warehouseId !== warehouseId) throw new Error("LOT_PLACEMENT_NOT_FOUND");
 
-    if (productPlacement) {
-      const remainingDetail = await tx.warehouseLotPlacement.aggregate({ where: { warehouseId, objectId: placement.objectId, locationCode: placement.locationCode, lot: { productId: placement.lot.productId } }, _sum: { quantity: true } });
-      const currentAggregate = toQuantityNumber(productPlacement.quantity);
-      const desiredAggregate = Math.max(toQuantityNumber(remainingDetail._sum.quantity ?? 0), roundQuantity(currentAggregate - toQuantityNumber(placement.quantity)));
-      if (desiredAggregate <= 0) await tx.warehouseProductPlacement.delete({ where: { id: productPlacement.id } });
-      else await tx.warehouseProductPlacement.update({ where: { id: productPlacement.id }, data: { quantity: desiredAggregate } });
-    }
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      const productPlacement = await tx.warehouseProductPlacement.findFirst({ where: { warehouseId, productId: placement.lot.productId, objectId: placement.objectId, locationCode: placement.locationCode } });
+      const locatedBefore = productPlacement ? await getLocatedWarehouseQuantity(tx, warehouseId, placement.lot.productId) : 0;
+      await tx.warehouseLotPlacement.delete({ where: { id: placement.id } });
+
+      if (productPlacement) {
+        const remainingDetail = await tx.warehouseLotPlacement.aggregate({ where: { warehouseId, objectId: placement.objectId, locationCode: placement.locationCode, lot: { productId: placement.lot.productId } }, _sum: { quantity: true } });
+        const currentAggregate = toQuantityNumber(productPlacement.quantity);
+        const desiredAggregate = roundQuantity(Math.max(toQuantityNumber(remainingDetail._sum.quantity ?? 0), Math.max(0, currentAggregate - toQuantityNumber(placement.quantity))));
+        const aggregateDecrease = roundQuantity(Math.max(0, currentAggregate - desiredAggregate));
+
+        if (desiredAggregate <= 0) await tx.warehouseProductPlacement.delete({ where: { id: productPlacement.id } });
+        else await tx.warehouseProductPlacement.update({ where: { id: productPlacement.id }, data: { quantity: desiredAggregate } });
+
+        if (aggregateDecrease > 0) {
+          await tx.warehouseLocationMovement.create({
+            data: {
+              warehouseId,
+              productId: placement.lot.productId,
+              type: WarehouseLocationMovementType.UNASSIGN,
+              quantity: -aggregateDecrease,
+              locatedAfter: roundQuantity(Math.max(0, locatedBefore - aggregateDecrease)),
+              fromObjectId: placement.objectId,
+              fromObjectLabel: placement.object.label,
+              fromLocationCode: placement.locationCode || null,
+              reference: `LOT-${placement.lot.internalCode}`,
+              note: "Desubicación física detallada por lote",
+              actor: actorName(),
+            },
+          });
+        }
+      }
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Error && error.message === "LOT_PLACEMENT_NOT_FOUND") redirect(lotsUrl("error", "La ubicación del lote ya no existe. Actualiza la pantalla.", warehouseId));
+    throw error;
+  }
 
   refresh();
   redirect(lotsUrl("ok", "Lote desubicado. El stock físico sigue disponible en la bodega.", warehouseId));
