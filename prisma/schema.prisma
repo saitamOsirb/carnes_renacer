@@ -130,8 +130,8 @@ model Product {
   imageUrl                   String                      @db.VarChar(500)
   price                      Int
   unit                       UnitType                    @default(KG)
-  stock                      Int
-  reserved                   Int                         @default(0)
+  stock                      Decimal                     @default(0) @db.Decimal(14, 3)
+  reserved                   Decimal                     @default(0) @db.Decimal(14, 3)
   active                     Boolean                     @default(true)
   featured                   Boolean                     @default(false)
   createdAt                  DateTime                    @default(now()) @db.DateTime(3)
@@ -220,7 +220,7 @@ model WarehouseProductPlacement {
   objectId     String                @db.VarChar(30)
   productId    String                @db.VarChar(30)
   locationCode String                @default("") @db.VarChar(80)
-  quantity     Int                   @default(0)
+  quantity     Decimal               @default(0) @db.Decimal(14, 3)
   createdAt    DateTime              @default(now()) @db.DateTime(3)
   updatedAt    DateTime              @updatedAt @db.DateTime(3)
   warehouse    Warehouse             @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
@@ -238,8 +238,8 @@ model WarehouseLocationMovement {
   warehouseId      String                        @db.VarChar(30)
   productId        String                        @db.VarChar(30)
   type             WarehouseLocationMovementType
-  quantity         Int
-  locatedAfter     Int
+  quantity         Decimal                       @db.Decimal(14, 3)
+  locatedAfter     Decimal                       @db.Decimal(14, 3)
   fromObjectId     String?                       @db.VarChar(30)
   fromObjectLabel  String?                       @db.VarChar(120)
   fromLocationCode String?                       @db.VarChar(80)
@@ -261,9 +261,9 @@ model InventoryStock {
   id          String    @id @default(cuid()) @db.VarChar(30)
   warehouseId String    @db.VarChar(30)
   productId   String    @db.VarChar(30)
-  onHand      Int       @default(0)
-  reserved    Int       @default(0)
-  minStock    Int       @default(0)
+  onHand      Decimal   @default(0) @db.Decimal(14, 3)
+  reserved    Decimal   @default(0) @db.Decimal(14, 3)
+  minStock    Decimal   @default(0) @db.Decimal(14, 3)
   createdAt   DateTime  @default(now()) @db.DateTime(3)
   updatedAt   DateTime  @updatedAt @db.DateTime(3)
   warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
@@ -278,9 +278,9 @@ model InventoryMovement {
   warehouseId   String                @db.VarChar(30)
   productId     String                @db.VarChar(30)
   type          InventoryMovementType
-  quantity      Int
-  onHandAfter   Int
-  reservedAfter Int
+  quantity      Decimal               @db.Decimal(14, 3)
+  onHandAfter   Decimal               @db.Decimal(14, 3)
+  reservedAfter Decimal               @db.Decimal(14, 3)
   note          String?               @db.VarChar(500)
   reference     String?               @db.VarChar(100)
   createdAt     DateTime              @default(now()) @db.DateTime(3)
@@ -295,7 +295,7 @@ model InventoryReservation {
   id          String    @id @default(cuid()) @db.VarChar(30)
   orderItemId String    @db.VarChar(30)
   warehouseId String    @db.VarChar(30)
-  quantity    Int
+  quantity    Decimal   @db.Decimal(14, 3)
   createdAt   DateTime  @default(now()) @db.DateTime(3)
   orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
   warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
@@ -445,7 +445,7 @@ model PosSaleItem {
   productId   String   @db.VarChar(30)
   productName String   @db.VarChar(191)
   unit        UnitType
-  quantity    Int
+  quantity    Decimal  @db.Decimal(14, 3)
   unitPrice   Int
   subtotal    Int
   sale        PosSale  @relation(fields: [saleId], references: [id], onDelete: Cascade)
@@ -501,7 +501,7 @@ model OrderItem {
   productName           String                 @db.VarChar(191)
   imageUrl              String                 @db.VarChar(500)
   unit                  UnitType
-  quantity              Int
+  quantity              Decimal                @db.Decimal(14, 3)
   unitPrice             Int
   subtotal              Int
   order                 Order                  @relation(fields: [orderId], references: [id], onDelete: Cascade)
