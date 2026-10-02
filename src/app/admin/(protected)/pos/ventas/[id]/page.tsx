@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { PrintButton } from "@/components/admin/print-button";
 import { formatClp } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { formatQuantity } from "@/lib/quantity";
 import { dteTypeLabel } from "@/lib/sii/billing-service";
 
 export const dynamic = "force-dynamic";
@@ -15,10 +16,6 @@ const paymentLabels: Record<PosPaymentMethod, string> = {
   TRANSFER: "Transferencia",
   OTHER: "Otro",
 };
-
-function unitLabel(unit: string): string {
-  return unit === "KG" ? "kg" : "un.";
-}
 
 export default async function PosSaleReceiptPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -41,33 +38,15 @@ export default async function PosSaleReceiptPage({ params }: { params: Promise<{
       <div className="pos-receipt-actions no-print">
         <Link href={sale.shiftId ? `/admin/pos?shift=${sale.shiftId}` : "/admin/pos"} className="admin-button admin-button-secondary">← Volver al POS</Link>
         <div className="pos-receipt-action-group">
-          {currentDte ? (
-            <Link href={`/admin/facturacion/${currentDte.id}`} className="admin-button admin-button-secondary">Ver DTE</Link>
-          ) : (
-            <Link href="/admin/facturacion" className="admin-button admin-button-secondary">Emitir boleta / factura</Link>
-          )}
+          {currentDte ? <Link href={`/admin/facturacion/${currentDte.id}`} className="admin-button admin-button-secondary">Ver DTE</Link> : <Link href="/admin/facturacion" className="admin-button admin-button-secondary">Emitir boleta / factura</Link>}
           <PrintButton />
         </div>
       </div>
 
-      {currentDte && (
-        <section className={`pos-dte-banner is-${currentDte.status.toLowerCase()}`}>
-          <div>
-            <span>Documento tributario</span>
-            <strong>{dteTypeLabel(currentDte.type)} · Folio {currentDte.folio}</strong>
-            <small>{currentDte.environment}{currentDte.trackId ? ` · Track ${currentDte.trackId}` : ""}</small>
-          </div>
-          <strong>{currentDte.status}</strong>
-        </section>
-      )}
+      {currentDte && <section className={`pos-dte-banner is-${currentDte.status.toLowerCase()}`}><div><span>Documento tributario</span><strong>{dteTypeLabel(currentDte.type)} · Folio {currentDte.folio}</strong><small>{currentDte.environment}{currentDte.trackId ? ` · Track ${currentDte.trackId}` : ""}</small></div><strong>{currentDte.status}</strong></section>}
 
       <article className="pos-receipt">
-        <header>
-          <span className="admin-kicker">Renacer Distribuidora</span>
-          <h1>Comprobante de venta</h1>
-          <strong>{sale.saleNumber}</strong>
-          <p>{sale.createdAt.toLocaleString("es-CL")}</p>
-        </header>
+        <header><span className="admin-kicker">Renacer Distribuidora</span><h1>Comprobante de venta</h1><strong>{sale.saleNumber}</strong><p>{sale.createdAt.toLocaleString("es-CL")}</p></header>
 
         <section className="pos-receipt-meta">
           {sale.shift?.register && <div><span>Caja</span><strong>{sale.shift.register.code} · {sale.shift.register.name}</strong></div>}
@@ -80,25 +59,20 @@ export default async function PosSaleReceiptPage({ params }: { params: Promise<{
         </section>
 
         <section className="pos-receipt-lines">
-          <div className="pos-receipt-row pos-receipt-row-head"><span>Producto</span><span>Cant.</span><span>Precio</span><span>Total</span></div>
-          {sale.items.map((item) => (
-            <div className="pos-receipt-row" key={item.id}>
-              <span><strong>{item.productName}</strong><small>{unitLabel(item.unit)}</small></span>
-              <span>{item.quantity}</span>
-              <span>{formatClp(item.unitPrice)}</span>
-              <span>{formatClp(item.subtotal)}</span>
-            </div>
-          ))}
+          <div className="pos-receipt-row pos-receipt-row-head"><span>Producto</span><span>Cant./peso</span><span>Precio</span><span>Total</span></div>
+          {sale.items.map((item) => <div className="pos-receipt-row" key={item.id}>
+            <span><strong>{item.productName}</strong><small>{item.unit === "KG" ? "Precio por kg" : "Precio por unidad"}</small></span>
+            <span>{formatQuantity(item.quantity, item.unit)}</span>
+            <span>{formatClp(item.unitPrice)}</span>
+            <span>{formatClp(item.subtotal)}</span>
+          </div>)}
         </section>
 
         <section className="pos-receipt-totals">
           <div><span>Subtotal</span><strong>{formatClp(sale.subtotal)}</strong></div>
           {sale.discount > 0 && <div><span>Descuento</span><strong>−{formatClp(sale.discount)}</strong></div>}
           <div className="pos-receipt-total"><span>Total</span><strong>{formatClp(sale.total)}</strong></div>
-          {sale.paymentMethod === "CASH" && <>
-            <div><span>Recibido</span><strong>{formatClp(sale.amountReceived ?? sale.total)}</strong></div>
-            <div><span>Vuelto</span><strong>{formatClp(sale.changeDue)}</strong></div>
-          </>}
+          {sale.paymentMethod === "CASH" && <><div><span>Recibido</span><strong>{formatClp(sale.amountReceived ?? sale.total)}</strong></div><div><span>Vuelto</span><strong>{formatClp(sale.changeDue)}</strong></div></>}
         </section>
 
         {sale.notes && <section className="pos-receipt-notes"><strong>Observación</strong><p>{sale.notes}</p></section>}
