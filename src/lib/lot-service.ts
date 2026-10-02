@@ -49,6 +49,14 @@ function normalizeUnitCost(value: number | null | undefined): number | null {
   return Number.isSafeInteger(value) && value >= 0 && value <= 2_000_000_000 ? value : null;
 }
 
+function calendarDay(value: Date): number {
+  return value.getFullYear() * 10_000 + (value.getMonth() + 1) * 100 + value.getDate();
+}
+
+function expirationBeforeManufacture(manufacturedAt: Date | null | undefined, expirationDate: Date | null | undefined): boolean {
+  return Boolean(manufacturedAt && expirationDate && calendarDay(expirationDate) < calendarDay(manufacturedAt));
+}
+
 function compareLots(
   left: { lot: { expirationDate: Date | null; manufacturedAt: Date | null; createdAt: Date } },
   right: { lot: { expirationDate: Date | null; manufacturedAt: Date | null; createdAt: Date } },
@@ -176,7 +184,7 @@ export async function reconcileLotStockWithAggregate(
 export async function createReceivedLot(tx: InventoryTx, input: ReceiveLotInput) {
   const quantity = roundQuantity(input.quantity);
   if (quantity <= 0) throw new Error("INVALID_LOT_QUANTITY");
-  if (input.manufacturedAt && input.expirationDate && input.expirationDate.getTime() < input.manufacturedAt.getTime()) {
+  if (expirationBeforeManufacture(input.manufacturedAt, input.expirationDate)) {
     throw new Error("INVALID_LOT_DATES");
   }
   const lot = await tx.productLot.create({
@@ -206,7 +214,7 @@ export async function createReceivedLot(tx: InventoryTx, input: ReceiveLotInput)
 export async function createProducedLot(tx: InventoryTx, input: ProducedLotInput) {
   const quantity = roundQuantity(input.quantity);
   if (quantity <= 0) throw new Error("INVALID_LOT_QUANTITY");
-  if (input.manufacturedAt && input.expirationDate && input.expirationDate.getTime() < input.manufacturedAt.getTime()) {
+  if (expirationBeforeManufacture(input.manufacturedAt, input.expirationDate)) {
     throw new Error("INVALID_LOT_DATES");
   }
   const lot = await tx.productLot.create({
