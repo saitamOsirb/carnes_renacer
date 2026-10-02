@@ -3,6 +3,7 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { createProduct, deleteProduct, updateProduct } from "@/app/admin/actions";
 import { updateProductBarcode } from "@/app/admin/product-barcode-actions";
+import { formatQuantity, roundQuantity, toQuantityNumber } from "@/lib/quantity";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,7 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
   return (
     <div className="admin-content">
       <div className="admin-title-row">
-        <div><span className="admin-kicker">Catálogo</span><h1>Mantenedor de productos</h1><p>Los cambios de producto se reflejan en la tienda. El stock se administra centralizadamente desde Inventario.</p></div>
+        <div><span className="admin-kicker">Catálogo</span><h1>Mantenedor de productos</h1><p>Los cambios se reflejan en la tienda. Productos por kg admiten stock con precisión de 0,001 kg.</p></div>
         <div className="admin-stat"><strong>{products.length}</strong><span>productos</span></div>
       </div>
 
@@ -40,7 +41,7 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
             <label>Slug <small>(opcional)</small><input name="slug" maxLength={191} placeholder="se genera desde el nombre" /></label>
             <label>Categoría<input name="category" required maxLength={100} placeholder="Vacuno, Cerdo, Pollo…" /></label>
             <label>Precio CLP<input name="price" type="number" required min="0" step="1" /></label>
-            <label>Stock inicial<input name="stock" type="number" required min="0" step="1" /><small>Se registrará como apertura de inventario.</small></label>
+            <label>Stock inicial<input name="stock" type="number" required min="0" step="0.001" /><small>KG permite hasta tres decimales; unidad exige enteros.</small></label>
             <label>Unidad<select name="unit" defaultValue="KG"><option value="KG">Kilogramo (KG)</option><option value="UNIT">Unidad</option></select></label>
           </div>
           <label>Descripción<textarea name="description" required minLength={3} maxLength={5000} rows={3} /></label>
@@ -54,11 +55,14 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
         <div className="admin-inline-notice" style={{ marginTop: 16 }}>Después de crear el producto podrás asociar su código de barras directamente en su ficha. Puedes escribirlo o enfocar el campo y escanear con un lector USB/Bluetooth.</div>
       </section>
 
-      <div className="admin-inline-notice">El stock disponible y reservado es de solo lectura aquí. Usa <Link href="/admin/inventario">Inventario</Link> para entradas, salidas, ajustes, mínimos y transferencias entre bodegas.</div>
+      <div className="admin-inline-notice">El stock físico y reservado es de solo lectura aquí. Usa <Link href="/admin/inventario">Inventario</Link> para entradas, salidas, ajustes, mínimos y transferencias. La unidad de medida no puede cambiarse una vez que exista historial de inventario.</div>
 
       <section className="admin-products-list">
         {products.map((product) => {
           const barcode = barcodeByProduct.get(product.id) ?? "";
+          const physical = toQuantityNumber(product.stock);
+          const reserved = toQuantityNumber(product.reserved);
+          const available = roundQuantity(Math.max(0, physical - reserved));
           return (
             <article className={`admin-product-card${product.active ? "" : " is-inactive"}`} key={product.id}>
               <div className="admin-product-preview">
@@ -74,24 +78,9 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
               <form action={updateProductBarcode} className="admin-form" style={{ marginBottom: 20, paddingBottom: 18, borderBottom: "1px solid #ece8e3" }}>
                 <input type="hidden" name="productId" value={product.id} />
                 <div className="admin-grid admin-grid-3" style={{ alignItems: "end" }}>
-                  <label>
-                    Código de barras
-                    <input
-                      name="barcode"
-                      defaultValue={barcode}
-                      minLength={4}
-                      maxLength={80}
-                      autoComplete="off"
-                      placeholder="Ej: 7801234567890"
-                    />
-                    <small>Enfoca este campo y escanea. Dejar vacío desasocia el código.</small>
-                  </label>
-                  <div>
-                    <button className="admin-button admin-button-secondary" type="submit">Guardar código</button>
-                  </div>
-                  <div>
-                    <Link className="admin-button admin-button-secondary" href="/admin/consulta-precio">Probar consulta</Link>
-                  </div>
+                  <label>Código de barras<input name="barcode" defaultValue={barcode} minLength={4} maxLength={80} autoComplete="off" placeholder="Ej: 7801234567890" /><small>Enfoca este campo y escanea. Dejar vacío desasocia el código.</small></label>
+                  <div><button className="admin-button admin-button-secondary" type="submit">Guardar código</button></div>
+                  <div><Link className="admin-button admin-button-secondary" href="/admin/consulta-precio">Probar consulta</Link></div>
                 </div>
               </form>
 
@@ -102,7 +91,7 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
                   <label>Slug<input name="slug" required defaultValue={product.slug} maxLength={191} /></label>
                   <label>Categoría<input name="category" required defaultValue={product.category} maxLength={100} /></label>
                   <label>Precio CLP<input name="price" type="number" required min="0" step="1" defaultValue={product.price} /></label>
-                  <label>Stock disponible<input value={product.stock} readOnly aria-readonly="true" /><small>Gestionado por Inventario.</small></label>
+                  <label>Stock disponible<input value={formatQuantity(available, product.unit)} readOnly aria-readonly="true" /><small>Físico {formatQuantity(physical, product.unit)} · reservado {formatQuantity(reserved, product.unit)}</small></label>
                   <label>Unidad<select name="unit" defaultValue={product.unit}><option value="KG">Kilogramo (KG)</option><option value="UNIT">Unidad</option></select></label>
                 </div>
                 <label>Descripción<textarea name="description" required maxLength={5000} rows={3} defaultValue={product.description} /></label>
@@ -110,7 +99,7 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
                 <div className="admin-checks">
                   <label><input type="checkbox" name="active" defaultChecked={product.active} /> Activo</label>
                   <label><input type="checkbox" name="featured" defaultChecked={product.featured} /> Destacado</label>
-                  {product.reserved > 0 && <span className="admin-reserved">Reservado: {product.reserved}</span>}
+                  {reserved > 0 && <span className="admin-reserved">Reservado: {formatQuantity(reserved, product.unit)}</span>}
                 </div>
                 <button className="admin-button admin-button-primary" type="submit">Guardar cambios</button>
               </form>
