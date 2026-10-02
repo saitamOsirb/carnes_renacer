@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
+import { roundQuantity, toQuantityNumber } from "@/lib/quantity";
 
 const BARCODE_PREFIX = "barcode:";
 
@@ -27,6 +28,7 @@ export async function getPriceCheckerProducts(): Promise<PriceCheckerProduct[]> 
         price: true,
         unit: true,
         stock: true,
+        reserved: true,
       },
       orderBy: [{ category: "asc" }, { name: "asc" }],
     }),
@@ -41,7 +43,13 @@ export async function getPriceCheckerProducts(): Promise<PriceCheckerProduct[]> 
   );
 
   return products.map((product) => ({
-    ...product,
+    id: product.id,
+    name: product.name,
+    category: product.category,
+    imageUrl: product.imageUrl,
+    price: product.price,
+    unit: product.unit,
+    stock: roundQuantity(Math.max(0, toQuantityNumber(product.stock) - toQuantityNumber(product.reserved))),
     barcode: barcodeByProduct.get(product.id) ?? null,
   }));
 }
