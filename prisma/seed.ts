@@ -48,7 +48,7 @@ async function main() {
     });
 
     if (!existingStock) {
-      const onHand = savedProduct.stock + savedProduct.reserved;
+      const onHand = savedProduct.stock;
       await prisma.$transaction(async (tx) => {
         await tx.inventoryStock.create({
           data: {
@@ -59,7 +59,7 @@ async function main() {
             minStock: 0,
           },
         });
-        if (onHand > 0) {
+        if (onHand.gt(0)) {
           await tx.inventoryMovement.create({
             data: {
               warehouseId: warehouse.id,
