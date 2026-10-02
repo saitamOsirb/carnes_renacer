@@ -24,6 +24,7 @@ const navGroups: NavGroup[] = [
       { href: "/admin/facturacion", label: "Facturación SII" },
       { href: "/admin/pos/cajas", label: "Cajas" },
       { href: "/admin/pos/configuracion", label: "Usuarios POS" },
+      { href: "/admin/pos/balanza", label: "Balanza" },
       { href: "/admin/pos/reportes", label: "Reportes" },
     ],
   },
