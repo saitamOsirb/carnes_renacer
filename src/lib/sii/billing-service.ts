@@ -25,6 +25,11 @@ export type IssuePosDteInput = {
   receiverCity?: string;
 };
 
+export type IssuePosReturnCreditNoteInput = {
+  returnId: string;
+  parentDocumentId?: string;
+};
+
 export class DteBillingError extends Error {
   constructor(message: string) {
     super(message);
@@ -138,6 +143,26 @@ async function markTransportError(documentIdValue: string, error: unknown): Prom
   throw new DteBillingError(message);
 }
 
+async function submitCreatedDocument(document: DteDocument): Promise<DteDocument> {
+  const config = getSiiConfig();
+  try {
+    const result = await submitDteToSii({
+      documentId: document.id,
+      typeCode: document.typeCode,
+      folio: document.folio,
+      environment: document.environment,
+      issueDate: document.issueDate.toISOString(),
+      issuerRut: config.company.rut,
+      receiverRut: document.receiverRut,
+      totalAmount: document.totalAmount,
+      xmlDraft: document.xmlDraft ?? "",
+    });
+    return await recordTransportResult(document, result);
+  } catch (error) {
+    return markTransportError(document.id, error);
+  }
+}
+
 export async function issuePosSaleDte(input: IssuePosDteInput): Promise<DteDocument> {
   if (input.type !== DteDocumentType.BOLETA_ELECTRONICA && input.type !== DteDocumentType.FACTURA_ELECTRONICA) {
     throw new DteBillingError("Este flujo solo permite boleta electrónica tipo 39 o factura electrónica tipo 33.");
@@ -236,22 +261,144 @@ export async function issuePosSaleDte(input: IssuePosDteInput): Promise<DteDocum
     return created;
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
-  try {
-    const result = await submitDteToSii({
-      documentId: document.id,
-      typeCode: document.typeCode,
-      folio: document.folio,
-      environment: document.environment,
-      issueDate: document.issueDate.toISOString(),
-      issuerRut: config.company.rut,
-      receiverRut: document.receiverRut,
-      totalAmount: document.totalAmount,
-      xmlDraft: document.xmlDraft ?? "",
-    });
-    return await recordTransportResult(document, result);
-  } catch (error) {
-    return markTransportError(document.id, error);
+  return submitCreatedDocument(document);
+}
+
+export async function issuePosReturnCreditNote(input: IssuePosReturnCreditNoteInput): Promise<DteDocument> {
+  const config = getSiiConfig();
+  if (config.environment !== DteEnvironment.MOCK) assertSiiCanSubmit(config);
+
+  const posReturn = await prisma.posReturn.findUnique({
+    where: { id: input.returnId.slice(0, 30) },
+    include: {
+      items: { orderBy: { productName: "asc" } },
+      dteDocuments: { orderBy: { createdAt: "desc" } },
+      sale: {
+        include: {
+          returns: { select: { totalAmount: true } },
+          dteDocuments: { orderBy: { createdAt: "desc" } },
+        },
+      },
+    },
+  });
+  if (!posReturn) throw new DteBillingError("Devolución POS no encontrada.");
+
+  const blocking = posReturn.dteDocuments.find((item) => item.typeCode === 61 && item.status !== DteStatus.CANCELLED && item.status !== DteStatus.REJECTED);
+  if (blocking) throw new DteBillingError(`La devolución ya tiene nota de crédito folio ${blocking.folio} en estado ${blocking.status}.`);
+
+  const originalDocuments = posReturn.sale.dteDocuments.filter((item) =>
+    (item.typeCode === 33 || item.typeCode === 39)
+    && item.status !== DteStatus.CANCELLED
+    && item.status !== DteStatus.REJECTED,
+  );
+  const parent = input.parentDocumentId
+    ? originalDocuments.find((item) => item.id === input.parentDocumentId?.slice(0, 30))
+    : originalDocuments[0];
+  if (!parent) throw new DteBillingError("La venta original no tiene una boleta o factura válida para referenciar en la nota de crédito.");
+  if (parent.environment !== config.environment) throw new DteBillingError("El DTE original pertenece a otro ambiente SII.");
+  if (config.environment !== DteEnvironment.MOCK && parent.status !== DteStatus.ACCEPTED && parent.status !== DteStatus.OBSERVED) {
+    throw new DteBillingError(`El DTE original está en estado ${parent.status}. Actualiza su estado antes de emitir la nota de crédito.`);
   }
+
+  const cumulativeRefund = posReturn.sale.returns.reduce((sum, item) => sum + item.totalAmount, 0);
+  const fullReturn = cumulativeRefund >= posReturn.sale.total;
+  const referenceCode = fullReturn ? 1 : 3;
+  const typeCode = dteTypeCode(DteDocumentType.NOTA_CREDITO);
+  const { net, vat } = taxTotals(posReturn.totalAmount, config.vatRate);
+  const now = new Date();
+  const id = documentId();
+
+  const document = await prisma.$transaction(async (tx) => {
+    const folio = await nextFolio(tx, typeCode, config.environment);
+    const snapshot: DteXmlSnapshot = {
+      id: `DTE-${typeCode}-${folio}`,
+      typeCode,
+      folio,
+      issueDate: now,
+      saleNumber: posReturn.sale.saleNumber,
+      issuer: {
+        rut: placeholder(config.company.rut, "76000000-0", config.environment),
+        legalName: placeholder(config.company.legalName, "Renacer Distribuidora", config.environment),
+        giro: placeholder(config.company.giro, "Venta de alimentos", config.environment),
+        activityCode: placeholder(config.company.activityCode, "000000", config.environment),
+        address: placeholder(config.company.address, "Dirección pendiente", config.environment),
+        commune: placeholder(config.company.commune, "Comuna pendiente", config.environment),
+        city: placeholder(config.company.city, "Ciudad pendiente", config.environment),
+      },
+      receiver: parent.receiverRut && parent.receiverName ? {
+        rut: parent.receiverRut,
+        name: parent.receiverName,
+        giro: parent.receiverGiro,
+        address: parent.receiverAddress,
+        commune: parent.receiverCommune,
+        city: parent.receiverCity,
+      } : null,
+      netAmount: net,
+      exemptAmount: 0,
+      vatRate: config.vatRate,
+      vatAmount: vat,
+      totalAmount: posReturn.totalAmount,
+      lines: posReturn.items.map((item, index) => ({
+        line: index + 1,
+        name: item.productName,
+        quantity: toQuantityNumber(item.quantity),
+        unit: item.unit,
+        unitPrice: item.unitPrice,
+        discountAmount: item.discountAmount,
+        amount: item.totalAmount,
+      })),
+      references: [{
+        line: 1,
+        documentType: parent.typeCode,
+        folio: parent.folio,
+        issueDate: parent.issueDate,
+        code: referenceCode,
+        reason: fullReturn
+          ? `Anulación por devolución total ${posReturn.returnNumber}`
+          : `Corrección de montos por devolución parcial ${posReturn.returnNumber}`,
+      }],
+    };
+    const xmlDraft = buildDteXmlDraft(snapshot);
+
+    const created = await tx.dteDocument.create({
+      data: {
+        id,
+        saleId: posReturn.saleId,
+        returnId: posReturn.id,
+        parentId: parent.id,
+        type: DteDocumentType.NOTA_CREDITO,
+        typeCode,
+        folio,
+        environment: config.environment,
+        status: DteStatus.GENERATED,
+        issueDate: now,
+        receiverRut: parent.receiverRut,
+        receiverName: parent.receiverName,
+        receiverGiro: parent.receiverGiro,
+        receiverAddress: parent.receiverAddress,
+        receiverCommune: parent.receiverCommune,
+        receiverCity: parent.receiverCity,
+        netAmount: net,
+        exemptAmount: 0,
+        vatAmount: vat,
+        vatRate: config.vatRate,
+        totalAmount: posReturn.totalAmount,
+        xmlDraft,
+        issuedAt: now,
+      },
+    });
+    await tx.dteEvent.create({
+      data: {
+        documentId: created.id,
+        status: DteStatus.GENERATED,
+        code: "CREDIT_NOTE_GENERATED",
+        message: `Nota de crédito generada por ${posReturn.returnNumber}, referenciando DTE ${parent.typeCode} folio ${parent.folio}.`,
+      },
+    });
+    return created;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+  return submitCreatedDocument(document);
 }
 
 export async function retryDteSubmission(documentIdValue: string): Promise<DteDocument> {
