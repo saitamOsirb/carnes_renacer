@@ -21,11 +21,7 @@ export async function syncProductInventory(tx: InventoryTx, productId: string): 
     select: { onHand: true, reserved: true },
   });
 
-  const stock = roundQuantity(stocks.reduce((sum, item) => {
-    const onHand = toQuantityNumber(item.onHand);
-    const reserved = toQuantityNumber(item.reserved);
-    return sum + Math.max(0, onHand - reserved);
-  }, 0));
+  const stock = roundQuantity(stocks.reduce((sum, item) => sum + toQuantityNumber(item.onHand), 0));
   const reserved = roundQuantity(stocks.reduce((sum, item) => sum + toQuantityNumber(item.reserved), 0));
 
   await tx.product.update({
