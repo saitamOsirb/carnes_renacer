@@ -9,12 +9,26 @@ type Props = {
   mode?: "public" | "admin";
 };
 
+type DetectedBarcode = { rawValue: string };
+type BarcodeDetectorLike = { detect(source: CanvasImageSource): Promise<DetectedBarcode[]> };
+type BarcodeDetectorConstructor = new () => BarcodeDetectorLike;
+
+declare global {
+  interface Window {
+    BarcodeDetector?: BarcodeDetectorConstructor;
+  }
+}
+
 function normalize(value: string): string {
   return value
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
+}
+
+function normalizeBarcode(value: string): string {
+  return value.replace(/\s+/g, "").trim();
 }
 
 function priceLabel(product: PriceCheckerProduct): string {
@@ -28,16 +42,63 @@ function priceLabel(product: PriceCheckerProduct): string {
 
 export function PriceChecker({ products, mode = "public" }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const scanFrameRef = useRef<number | null>(null);
+  const detectBusyRef = useRef(false);
+  const scannerBufferRef = useRef({ value: "", lastAt: 0 });
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("TODAS");
   const [selectedId, setSelectedId] = useState("");
   const [fullscreen, setFullscreen] = useState(false);
+  const [cameraSupported, setCameraSupported] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [scanMessage, setScanMessage] = useState("Lector listo. Escanea un código y termina con Enter.");
+
+  const barcodeMap = useMemo(() => {
+    const entries = products
+      .filter((product) => product.barcode)
+      .map((product) => [normalizeBarcode(product.barcode ?? ""), product] as const);
+    return new Map(entries);
+  }, [products]);
 
   useEffect(() => {
     const onFullscreenChange = () => setFullscreen(Boolean(document.fullscreenElement));
     document.addEventListener("fullscreenchange", onFullscreenChange);
+    setCameraSupported(Boolean(window.BarcodeDetector && navigator.mediaDevices?.getUserMedia));
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const now = performance.now();
+      const buffer = scannerBufferRef.current;
+
+      if (event.key.length === 1) {
+        if (now - buffer.lastAt > 120) buffer.value = "";
+        buffer.value += event.key;
+        buffer.lastAt = now;
+        return;
+      }
+
+      if (event.key === "Enter") {
+        const code = normalizeBarcode(buffer.value);
+        const looksLikeScanner = code.length >= 4 && now - buffer.lastAt < 300;
+        buffer.value = "";
+        if (looksLikeScanner) {
+          event.preventDefault();
+          resolveBarcode(code, "lector");
+        }
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
+  useEffect(() => () => stopCamera(), []);
 
   const categories = useMemo(
     () => Array.from(new Set(products.map((product) => product.category))).sort((a, b) => a.localeCompare(b, "es")),
@@ -46,9 +107,14 @@ export function PriceChecker({ products, mode = "public" }: Props) {
 
   const results = useMemo(() => {
     const needle = normalize(query);
+    const barcodeNeedle = normalizeBarcode(query);
     return products
       .filter((product) => category === "TODAS" || product.category === category)
-      .filter((product) => !needle || normalize(`${product.name} ${product.category}`).includes(needle))
+      .filter((product) => {
+        if (!needle) return true;
+        if (product.barcode && normalizeBarcode(product.barcode).includes(barcodeNeedle)) return true;
+        return normalize(`${product.name} ${product.category}`).includes(needle);
+      })
       .sort((left, right) => Number(right.stock > 0) - Number(left.stock > 0) || left.name.localeCompare(right.name, "es"));
   }, [products, query, category]);
 
@@ -57,6 +123,85 @@ export function PriceChecker({ products, mode = "public" }: Props) {
   function choose(product: PriceCheckerProduct): void {
     setSelectedId(product.id);
     setQuery(product.name);
+  }
+
+  function resolveBarcode(raw: string, source: "lector" | "cámara"): void {
+    const code = normalizeBarcode(raw);
+    if (!code) return;
+    const product = barcodeMap.get(code);
+    if (product) {
+      choose(product);
+      setScanMessage(`${source === "cámara" ? "Cámara" : "Lector"}: ${code} · ${product.name}`);
+      if (source === "cámara") stopCamera();
+      return;
+    }
+
+    setSelectedId("");
+    setQuery(code);
+    setCategory("TODAS");
+    setScanMessage(`Código ${code} no registrado. Asígnalo desde el mantenedor de productos.`);
+    searchRef.current?.focus();
+  }
+
+  function stopCamera(): void {
+    if (scanFrameRef.current !== null) {
+      cancelAnimationFrame(scanFrameRef.current);
+      scanFrameRef.current = null;
+    }
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setCameraOpen(false);
+    detectBusyRef.current = false;
+  }
+
+  async function startCamera(): Promise<void> {
+    if (!window.BarcodeDetector || !navigator.mediaDevices?.getUserMedia) {
+      setScanMessage("Este navegador no soporta lectura de códigos con cámara. Puedes usar un lector USB/Bluetooth.");
+      return;
+    }
+
+    try {
+      stopCamera();
+      setCameraOpen(true);
+      setScanMessage("Abriendo cámara…");
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      });
+      mediaStreamRef.current = stream;
+      const video = videoRef.current;
+      if (!video) throw new Error("No se encontró el visor de cámara.");
+      video.srcObject = stream;
+      await video.play();
+      const detector = new window.BarcodeDetector();
+      setScanMessage("Apunta la cámara al código de barras.");
+
+      const scan = async () => {
+        if (!mediaStreamRef.current || !videoRef.current) return;
+        if (video.readyState >= 2 && !detectBusyRef.current) {
+          detectBusyRef.current = true;
+          try {
+            const detected = await detector.detect(video);
+            const code = detected.find((item) => item.rawValue)?.rawValue;
+            if (code) {
+              resolveBarcode(code, "cámara");
+              return;
+            }
+          } catch {
+            // Algunos navegadores pueden fallar temporalmente entre frames.
+          } finally {
+            detectBusyRef.current = false;
+          }
+        }
+        scanFrameRef.current = requestAnimationFrame(scan);
+      };
+      scanFrameRef.current = requestAnimationFrame(scan);
+    } catch (error) {
+      stopCamera();
+      setScanMessage(error instanceof Error ? `No fue posible usar la cámara: ${error.message}` : "No fue posible usar la cámara.");
+    }
   }
 
   async function toggleFullscreen(): Promise<void> {
@@ -77,18 +222,37 @@ export function PriceChecker({ products, mode = "public" }: Props) {
         <div>
           <span className="price-checker-kicker">Renacer Distribuidora</span>
           <h1>Consulta de precio</h1>
-          <p>Busca un producto para conocer su precio vigente.</p>
+          <p>Busca, escanea con lector o usa la cámara para conocer el precio vigente.</p>
         </div>
         <button type="button" className="price-checker-fullscreen" onClick={toggleFullscreen}>
           {fullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
         </button>
       </header>
 
+      <section className="price-checker-scanner-panel" aria-label="Escáner de códigos">
+        <div className="price-checker-scanner-status">
+          <span className="price-checker-scanner-icon" aria-hidden="true">▥</span>
+          <div>
+            <strong>Escáner de código de barras</strong>
+            <small>{scanMessage}</small>
+          </div>
+        </div>
+        <div className="price-checker-scanner-actions">
+          {cameraSupported && !cameraOpen && <button type="button" onClick={startCamera}>Escanear con cámara</button>}
+          {cameraOpen && <button type="button" className="is-stop" onClick={stopCamera}>Cerrar cámara</button>}
+        </div>
+        <div className={`price-checker-camera${cameraOpen ? " is-open" : ""}`}>
+          <video ref={videoRef} muted playsInline aria-label="Vista de cámara para escanear código" />
+          {cameraOpen && <div className="price-checker-camera-frame" aria-hidden="true" />}
+        </div>
+      </section>
+
       <section className="price-checker-search-panel">
-        <label htmlFor="price-checker-search">Buscar producto</label>
+        <label htmlFor="price-checker-search">Buscar producto o código</label>
         <div className="price-checker-search-row">
           <span aria-hidden="true">⌕</span>
           <input
+            ref={searchRef}
             id="price-checker-search"
             autoFocus
             value={query}
@@ -99,7 +263,7 @@ export function PriceChecker({ products, mode = "public" }: Props) {
             onKeyDown={(event) => {
               if (event.key === "Enter" && results[0]) choose(results[0]);
             }}
-            placeholder="Ej: lomo vetado, pollo, costillar…"
+            placeholder="Ej: lomo vetado, pollo o 7801234567890"
             autoComplete="off"
           />
           {query && (
@@ -109,6 +273,8 @@ export function PriceChecker({ products, mode = "public" }: Props) {
               onClick={() => {
                 setQuery("");
                 setSelectedId("");
+                setScanMessage("Lector listo. Escanea un código y termina con Enter.");
+                searchRef.current?.focus();
               }}
             >
               Limpiar
@@ -146,6 +312,7 @@ export function PriceChecker({ products, mode = "public" }: Props) {
                   <small>{product.category}</small>
                   <strong>{product.name}</strong>
                   <b>{priceLabel(product)}</b>
+                  {mode === "admin" && product.barcode && <code>{product.barcode}</code>}
                   <em className={product.stock > 0 ? "is-available" : "is-out"}>{product.stock > 0 ? "Disponible" : "Agotado"}</em>
                 </span>
               </button>
@@ -155,7 +322,7 @@ export function PriceChecker({ products, mode = "public" }: Props) {
           {results.length === 0 && (
             <div className="price-checker-empty">
               <strong>No encontramos productos</strong>
-              <span>Prueba con otro nombre o selecciona otra categoría.</span>
+              <span>Prueba con otro nombre, categoría o revisa que el código esté asignado.</span>
             </div>
           )}
         </section>
@@ -170,6 +337,7 @@ export function PriceChecker({ products, mode = "public" }: Props) {
               <h2>{selected.name}</h2>
               <span className="price-checker-detail-caption">Precio vigente</span>
               <strong className="price-checker-detail-price">{priceLabel(selected)}</strong>
+              {mode === "admin" && selected.barcode && <span className="price-checker-detail-barcode">Código: {selected.barcode}</span>}
               <span className={`price-checker-status${selected.stock > 0 ? " is-available" : " is-out"}`}>
                 {selected.stock > 0 ? "Disponible para compra" : "Producto agotado"}
               </span>
@@ -179,6 +347,8 @@ export function PriceChecker({ products, mode = "public" }: Props) {
                 onClick={() => {
                   setSelectedId("");
                   setQuery("");
+                  setScanMessage("Lector listo. Escanea un código y termina con Enter.");
+                  searchRef.current?.focus();
                 }}
               >
                 Consultar otro producto
@@ -186,8 +356,8 @@ export function PriceChecker({ products, mode = "public" }: Props) {
             </>
           ) : (
             <div className="price-checker-detail-placeholder">
-              <span aria-hidden="true">$</span>
-              <strong>Selecciona un producto</strong>
+              <span aria-hidden="true">▥</span>
+              <strong>Escanea o selecciona un producto</strong>
               <small>El precio aparecerá aquí en formato grande.</small>
             </div>
           )}

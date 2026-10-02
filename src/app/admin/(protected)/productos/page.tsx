@@ -2,14 +2,25 @@ import Image from "next/image";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { createProduct, deleteProduct, updateProduct } from "@/app/admin/actions";
+import { updateProductBarcode } from "@/app/admin/product-barcode-actions";
 
 export const dynamic = "force-dynamic";
 
+const BARCODE_PREFIX = "barcode:";
+
 export default async function AdminProductsPage({ searchParams }: { searchParams: Promise<{ ok?: string; error?: string }> }) {
-  const [products, query] = await Promise.all([
+  const [products, barcodeSettings, query] = await Promise.all([
     prisma.product.findMany({ orderBy: [{ active: "desc" }, { name: "asc" }] }),
+    prisma.storeSetting.findMany({
+      where: { key: { startsWith: BARCODE_PREFIX } },
+      select: { key: true, value: true },
+    }),
     searchParams,
   ]);
+
+  const barcodeByProduct = new Map(
+    barcodeSettings.map((setting) => [setting.value, setting.key.slice(BARCODE_PREFIX.length)]),
+  );
 
   return (
     <div className="admin-content">
@@ -40,43 +51,77 @@ export default async function AdminProductsPage({ searchParams }: { searchParams
           </div>
           <button className="admin-button admin-button-primary" type="submit">Crear producto</button>
         </form>
+        <div className="admin-inline-notice" style={{ marginTop: 16 }}>Después de crear el producto podrás asociar su código de barras directamente en su ficha. Puedes escribirlo o enfocar el campo y escanear con un lector USB/Bluetooth.</div>
       </section>
 
       <div className="admin-inline-notice">El stock disponible y reservado es de solo lectura aquí. Usa <Link href="/admin/inventario">Inventario</Link> para entradas, salidas, ajustes, mínimos y transferencias entre bodegas.</div>
 
       <section className="admin-products-list">
-        {products.map((product) => (
-          <article className={`admin-product-card${product.active ? "" : " is-inactive"}`} key={product.id}>
-            <div className="admin-product-preview">
-              <Image src={product.imageUrl} alt={product.name} width={180} height={138} sizes="180px" />
-              <div><strong>{product.name}</strong><span>{product.active ? "Activo" : "Inactivo"}</span><small>ID: {product.id}</small></div>
-            </div>
-            <form action={updateProduct} className="admin-product-form">
-              <input type="hidden" name="id" value={product.id} />
-              <div className="admin-grid admin-grid-3">
-                <label>Nombre<input name="name" required defaultValue={product.name} maxLength={191} /></label>
-                <label>Slug<input name="slug" required defaultValue={product.slug} maxLength={191} /></label>
-                <label>Categoría<input name="category" required defaultValue={product.category} maxLength={100} /></label>
-                <label>Precio CLP<input name="price" type="number" required min="0" step="1" defaultValue={product.price} /></label>
-                <label>Stock disponible<input value={product.stock} readOnly aria-readonly="true" /><small>Gestionado por Inventario.</small></label>
-                <label>Unidad<select name="unit" defaultValue={product.unit}><option value="KG">Kilogramo (KG)</option><option value="UNIT">Unidad</option></select></label>
+        {products.map((product) => {
+          const barcode = barcodeByProduct.get(product.id) ?? "";
+          return (
+            <article className={`admin-product-card${product.active ? "" : " is-inactive"}`} key={product.id}>
+              <div className="admin-product-preview">
+                <Image src={product.imageUrl} alt={product.name} width={180} height={138} sizes="180px" />
+                <div>
+                  <strong>{product.name}</strong>
+                  <span>{product.active ? "Activo" : "Inactivo"}</span>
+                  <small>ID: {product.id}</small>
+                  <small>Código: {barcode || "Sin código de barras"}</small>
+                </div>
               </div>
-              <label>Descripción<textarea name="description" required maxLength={5000} rows={3} defaultValue={product.description} /></label>
-              <label className="admin-file">Reemplazar imagen <small>(opcional, máx. 5 MB)</small><input name="image" type="file" accept="image/webp,image/png,image/jpeg" /></label>
-              <div className="admin-checks">
-                <label><input type="checkbox" name="active" defaultChecked={product.active} /> Activo</label>
-                <label><input type="checkbox" name="featured" defaultChecked={product.featured} /> Destacado</label>
-                {product.reserved > 0 && <span className="admin-reserved">Reservado: {product.reserved}</span>}
-              </div>
-              <button className="admin-button admin-button-primary" type="submit">Guardar cambios</button>
-            </form>
-            <form action={deleteProduct} className="admin-delete-form">
-              <input type="hidden" name="id" value={product.id} />
-              <button className="admin-button admin-button-danger" type="submit">Eliminar / desactivar</button>
-              <small>Si tiene historial de pedidos, se desactivará para conservar la trazabilidad.</small>
-            </form>
-          </article>
-        ))}
+
+              <form action={updateProductBarcode} className="admin-form" style={{ marginBottom: 20, paddingBottom: 18, borderBottom: "1px solid #ece8e3" }}>
+                <input type="hidden" name="productId" value={product.id} />
+                <div className="admin-grid admin-grid-3" style={{ alignItems: "end" }}>
+                  <label>
+                    Código de barras
+                    <input
+                      name="barcode"
+                      defaultValue={barcode}
+                      minLength={4}
+                      maxLength={80}
+                      autoComplete="off"
+                      placeholder="Ej: 7801234567890"
+                    />
+                    <small>Enfoca este campo y escanea. Dejar vacío desasocia el código.</small>
+                  </label>
+                  <div>
+                    <button className="admin-button admin-button-secondary" type="submit">Guardar código</button>
+                  </div>
+                  <div>
+                    <Link className="admin-button admin-button-secondary" href="/admin/consulta-precio">Probar consulta</Link>
+                  </div>
+                </div>
+              </form>
+
+              <form action={updateProduct} className="admin-product-form">
+                <input type="hidden" name="id" value={product.id} />
+                <div className="admin-grid admin-grid-3">
+                  <label>Nombre<input name="name" required defaultValue={product.name} maxLength={191} /></label>
+                  <label>Slug<input name="slug" required defaultValue={product.slug} maxLength={191} /></label>
+                  <label>Categoría<input name="category" required defaultValue={product.category} maxLength={100} /></label>
+                  <label>Precio CLP<input name="price" type="number" required min="0" step="1" defaultValue={product.price} /></label>
+                  <label>Stock disponible<input value={product.stock} readOnly aria-readonly="true" /><small>Gestionado por Inventario.</small></label>
+                  <label>Unidad<select name="unit" defaultValue={product.unit}><option value="KG">Kilogramo (KG)</option><option value="UNIT">Unidad</option></select></label>
+                </div>
+                <label>Descripción<textarea name="description" required maxLength={5000} rows={3} defaultValue={product.description} /></label>
+                <label className="admin-file">Reemplazar imagen <small>(opcional, máx. 5 MB)</small><input name="image" type="file" accept="image/webp,image/png,image/jpeg" /></label>
+                <div className="admin-checks">
+                  <label><input type="checkbox" name="active" defaultChecked={product.active} /> Activo</label>
+                  <label><input type="checkbox" name="featured" defaultChecked={product.featured} /> Destacado</label>
+                  {product.reserved > 0 && <span className="admin-reserved">Reservado: {product.reserved}</span>}
+                </div>
+                <button className="admin-button admin-button-primary" type="submit">Guardar cambios</button>
+              </form>
+              <form action={deleteProduct} className="admin-delete-form">
+                <input type="hidden" name="id" value={product.id} />
+                <button className="admin-button admin-button-danger" type="submit">Eliminar / desactivar</button>
+                <small>Si tiene historial de pedidos, se desactivará para conservar la trazabilidad.</small>
+              </form>
+            </article>
+          );
+        })}
       </section>
     </div>
   );
